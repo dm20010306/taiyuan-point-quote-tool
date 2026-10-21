@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <rect width="1200" height="900" fill="#f5f6f8"/>
+  <style>
+    .title{font:700 34px -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#283247}
+    .sub{font:400 16px -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#8a94a5}
+    .name{font:650 21px -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#354057}
+    .code{font:500 13px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#9aa4b2}
+    .card{fill:#fff;stroke:#e6eaf0;stroke-width:1.5}
+    .icon{fill:none;stroke:currentColor;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
+  </style>
+  <text x="60" y="65" class="title">智能图纸设备点位图标规范</text>
+  <text x="60" y="96" class="sub">48 × 48 统一网格 · 单色描边 · 白色底 · 适用于图纸、图例与 PDF/PNG 导出</text>
+
+  <defs>
+    <symbol id="switch" viewBox="0 0 48 48"><rect x="7" y="5" width="34" height="38"/><rect x="17" y="10" width="14" height="7"/><rect x="17" y="17" width="14" height="7"/><rect x="17" y="24" width="14" height="7"/><rect x="17" y="31" width="14" height="7"/></symbol>
+    <symbol id="curtain" viewBox="0 0 48 48"><rect x="5" y="14" width="38" height="20" rx="2"/><path d="M9 19h30M9 29h30M14 14v20M34 14v20"/><circle cx="14" cy="24" r="2.4"/><circle cx="34" cy="24" r="2.4"/></symbol>
+    <symbol id="sensor" viewBox="0 0 48 48"><circle cx="24" cy="24" r="18"/><circle cx="24" cy="24" r="12"/><circle cx="24" cy="24" r="3" fill="currentColor" stroke="none"/><path d="M24 8v4M24 36v4M8 24h4M36 24h4"/></symbol>
+    <symbol id="thermostat" viewBox="0 0 48 48"><rect x="8" y="6" width="32" height="36" rx="4"/><path d="M21 13v17a6 6 0 1 0 6 0V13a3 3 0 0 0-6 0Z"/><path d="M24 18v15"/><circle cx="24" cy="35" r="3" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="light" viewBox="0 0 48 48"><circle cx="24" cy="24" r="11"/><circle cx="24" cy="24" r="3" fill="currentColor" stroke="none"/><path d="M24 4v6M24 38v6M4 24h6M38 24h6M10 10l4 4M34 34l4 4M38 10l-4 4M14 34l-4 4"/></symbol>
+    <symbol id="lock" viewBox="0 0 48 48"><rect x="8" y="6" width="25" height="36"/><path d="M33 12h7v30H16M16 24h10"/><circle cx="27" cy="24" r="2" fill="currentColor" stroke="none"/><path d="M13 14h9M13 18h9"/></symbol>
+    <symbol id="camera" viewBox="0 0 48 48"><path d="M7 16h25v19H7z"/><circle cx="20" cy="25.5" r="6"/><circle cx="20" cy="25.5" r="2" fill="currentColor" stroke="none"/><path d="m32 21 10-5v19l-10-5M11 16l3-5h12l3 5"/></symbol>
+    <symbol id="network" viewBox="0 0 48 48"><rect x="7" y="28" width="34" height="12" rx="2"/><path d="M13 34h.1M19 34h.1M35 34h.1M24 26c3-3 7-3 10 0M19 21c6-6 14-6 20 0M14 16c9-9 21-9 30 0"/></symbol>
+    <symbol id="water" viewBox="0 0 48 48"><circle cx="24" cy="25" r="18"/><path d="M24 9c-5 8-9 12-9 19a9 9 0 0 0 18 0c0-7-4-11-9-19Z"/><path d="M20 31c1 2 3 3 6 3"/></symbol>
+    <symbol id="av" viewBox="0 0 48 48"><rect x="9" y="5" width="30" height="38" rx="3"/><circle cx="24" cy="17" r="6"/><circle cx="24" cy="32" r="8"/><circle cx="24" cy="32" r="3" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="system" viewBox="0 0 48 48"><rect x="7" y="6" width="34" height="36" rx="2"/><rect x="13" y="12" width="22" height="8"/><rect x="13" y="25" width="22" height="11"/><path d="M18 16h.1M22 16h.1M18 30h12M18 34h8"/></symbol>
+    <symbol id="other" viewBox="0 0 48 48"><path d="m24 5 17 10v18L24 43 7 33V15Z"/><circle cx="24" cy="24" r="5"/><path d="M24 13v3M24 32v3M13 24h3M32 24h3"/></symbol>
+  </defs>
+
+  <!-- Cards -->
+  <g transform="translate(60 135)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#e51f4b" transform="translate(30 28) scale(1.8)"><use href="#switch" width="48" height="48"/></g><text x="145" y="68" class="name">智能开关</text><text x="145" y="96" class="code">SWITCH / PANEL</text></g>
+  <g transform="translate(435 135)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#2459b8" transform="translate(30 28) scale(1.8)"><use href="#curtain" width="48" height="48"/></g><text x="145" y="68" class="name">窗帘</text><text x="145" y="96" class="code">CURTAIN MOTOR</text></g>
+  <g transform="translate(810 135)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#079447" transform="translate(30 28) scale(1.8)"><use href="#sensor" width="48" height="48"/></g><text x="145" y="68" class="name">人体传感器</text><text x="145" y="96" class="code">PRESENCE SENSOR</text></g>
+
+  <g transform="translate(60 320)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#e59144" transform="translate(30 28) scale(1.8)"><use href="#thermostat" width="48" height="48"/></g><text x="145" y="68" class="name">温控器</text><text x="145" y="96" class="code">THERMOSTAT</text></g>
+  <g transform="translate(435 320)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#d39a16" transform="translate(30 28) scale(1.8)"><use href="#light" width="48" height="48"/></g><text x="145" y="68" class="name">调光</text><text x="145" y="96" class="code">DIMMING AREA</text></g>
+  <g transform="translate(810 320)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#555e75" transform="translate(30 28) scale(1.8)"><use href="#lock" width="48" height="48"/></g><text x="145" y="68" class="name">智能门禁</text><text x="145" y="96" class="code">ACCESS CONTROL</text></g>
+
+  <g transform="translate(60 505)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#dd5360" transform="translate(30 28) scale(1.8)"><use href="#camera" width="48" height="48"/></g><text x="145" y="68" class="name">摄像头</text><text x="145" y="96" class="code">CAMERA</text></g>
+  <g transform="translate(435 505)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#2c9bce" transform="translate(30 28) scale(1.8)"><use href="#network" width="48" height="48"/></g><text x="145" y="68" class="name">网络设备</text><text x="145" y="96" class="code">NETWORK / AP</text></g>
+  <g transform="translate(810 505)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#008fb3" transform="translate(30 28) scale(1.8)"><use href="#water" width="48" height="48"/></g><text x="145" y="68" class="name">水浸传感器</text><text x="145" y="96" class="code">WATER SENSOR</text></g>
+
+  <g transform="translate(60 690)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#ad6c9e" transform="translate(30 28) scale(1.8)"><use href="#av" width="48" height="48"/></g><text x="145" y="68" class="name">影音设备</text><text x="145" y="96" class="code">AUDIO / VIDEO</text></g>
+  <g transform="translate(435 690)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#293f71" transform="translate(30 28) scale(1.8)"><use href="#system" width="48" height="48"/></g><text x="145" y="68" class="name">智能系统</text><text x="145" y="96" class="code">SYSTEM MODULE</text></g>
+  <g transform="translate(810 690)"><rect class="card" width="330" height="155" rx="18"/><g class="icon" style="color:#737b8c" transform="translate(30 28) scale(1.8)"><use href="#other" width="48" height="48"/></g><text x="145" y="68" class="name">其他设备</text><text x="145" y="96" class="code">OTHER</text></g>
+</svg>

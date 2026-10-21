@@ -1,0 +1,152 @@
+#!/bin/zsh
+set -e
+
+source_dir="${POINT_QUOTE_SOURCE_DIR:-${0:A:h}}"
+runtime_root="${HOME}/Library/Caches/TaiyuanPointQuote"
+runtime_frontend="${runtime_root}/frontend"
+runtime_venv="${runtime_root}/venv"
+data_root="${HOME}/Library/Application Support/TaiyuanPointQuote/data"
+export POINT_QUOTE_USER_DATA_DIR="$data_root"
+
+if [[ ! -f "$source_dir/backend/app.py" || ! -f "$source_dir/requirements.txt" || ! -d "$source_dir/frontend" ]]; then
+  echo "无法定位工具项目文件。请从工具根目录双击 start-mac.command，或在终端执行该文件的完整路径。"
+  read "?按回车键关闭窗口..."
+  exit 1
+fi
+
+# Resolve all project paths from this script, not from the shell's launch directory.
+cd "$source_dir"
+
+# Business data lives outside the downloaded/versioned program folder. On the
+# first run, preserve an existing tool-local data folder by copying it once.
+if [[ ! -d "$data_root" ]]; then
+  mkdir -p "${data_root:h}"
+  if [[ -d "$source_dir/data" ]]; then
+    /usr/bin/ditto "$source_dir/data" "$data_root"
+  else
+    mkdir -p "$data_root"
+  fi
+fi
+mkdir -p "$data_root/01_产品库/_品牌" \
+  "$data_root/06_客户档案/智能图纸与报价" \
+  "$data_root/09_附件" "$data_root/uploads" \
+  "$data_root/exports" "$data_root/backups" "$data_root/logs"
+
+sync_frontend() {
+  rsync -a --delete \
+    --exclude node_modules \
+    --exclude dist \
+    --exclude '*.tsbuildinfo' \
+    "$source_dir/frontend/" "$runtime_frontend/"
+}
+
+# 预演（-n -i）有输出，说明共享盘上的程序比本机运行缓存新。不用哈希，
+# 也就不会因为时间戳差异误判。
+frontend_needs_sync() {
+  local preview
+  preview="$(rsync -an --delete -i \
+    --exclude node_modules \
+    --exclude dist \
+    --exclude '*.tsbuildinfo' \
+    "$source_dir/frontend/" "$runtime_frontend/" 2>/dev/null || true)"
+  [[ -n "$preview" ]]
+}
+
+if /usr/bin/curl -fsS http://127.0.0.1:5173 >/dev/null 2>&1 \
+  && /usr/bin/curl -fsS http://127.0.0.1:8000/api/version >/dev/null 2>&1; then
+  running_data_dir="$(/usr/bin/curl -fsS http://127.0.0.1:8000/api/storage-status 2>/dev/null | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("data_dir", ""))' 2>/dev/null || true)"
+  if [[ "$running_data_dir" != "$data_root" ]]; then
+    echo "检测到旧服务仍在运行，当前数据目录无法确认。请先关闭之前启动的工具窗口，再运行本入口。"
+    read "?按回车键关闭窗口..."
+    exit 1
+  fi
+  # 服务已在运行时直接复用，不再重启。但复用之前必须确认本机前端缓存是
+  # 最新的，否则改了程序再打开，看到的还是旧界面。同步后 vite 会自行热更新。
+  mkdir -p "$runtime_frontend"
+  if frontend_needs_sync; then
+    echo "检测到前端程序有更新，正在同步到本机运行缓存..."
+    sync_frontend || true
+  fi
+  /usr/bin/open http://127.0.0.1:5173
+  exit 0
+fi
+
+mkdir -p "$runtime_frontend"
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "未找到 Node.js/npm，请先安装 Node.js 20 或更高版本。"
+  read "?按回车键关闭窗口..."
+  exit 1
+fi
+
+if [[ ! -x "$runtime_venv/bin/python" ]]; then
+  echo "正在创建 Mac 本地 Python 运行环境..."
+  python3 -m venv "$runtime_venv"
+fi
+
+requirements_hash="$(shasum -a 256 requirements.txt | awk '{print $1}')"
+installed_requirements="$(cat "$runtime_root/requirements.sha256" 2>/dev/null || true)"
+if [[ "$requirements_hash" != "$installed_requirements" ]]; then
+  echo "正在安装或更新 Python 依赖..."
+  "$runtime_venv/bin/python" -m pip install -r requirements.txt
+  echo "$requirements_hash" > "$runtime_root/requirements.sha256"
+fi
+
+echo "正在同步前端程序到 Mac 本地运行缓存..."
+if ! sync_frontend; then
+  broken_frontend="${runtime_root}/frontend.broken-$(date +%Y%m%d-%H%M%S)"
+  echo "检测到本地前端缓存异常，正在自动重建..."
+  mv "$runtime_frontend" "$broken_frontend"
+  mkdir -p "$runtime_frontend"
+  sync_frontend
+fi
+
+package_hash="$(shasum -a 256 "$runtime_frontend/package-lock.json" | awk '{print $1}')"
+installed_package="$(cat "$runtime_root/package-lock.sha256" 2>/dev/null || true)"
+if [[ ! -x "$runtime_frontend/node_modules/.bin/vite" || "$package_hash" != "$installed_package" ]]; then
+  echo "正在安装或更新网页依赖..."
+  (cd "$runtime_frontend" && npm ci)
+  echo "$package_hash" > "$runtime_root/package-lock.sha256"
+fi
+
+playwright_ready="$runtime_root/playwright-${package_hash}.ready"
+if [[ ! -f "$playwright_ready" ]]; then
+  echo "正在检查 PDF 导出所需的 Chromium..."
+  (cd "$runtime_frontend" && ./node_modules/.bin/playwright install chromium)
+  echo "ready" > "$playwright_ready"
+fi
+
+export PYTHONPYCACHEPREFIX="${TMPDIR:-/private/tmp}/pointquote-pycache"
+export POINT_QUOTE_LOG_DIR="$runtime_root/logs"
+export POINT_QUOTE_PLAYWRIGHT_ROOT="$runtime_frontend/node_modules/playwright"
+
+host="127.0.0.1"
+
+echo "本地数据目录：${data_root}"
+echo "项目位置：${source_dir}"
+echo "智能图纸点位与报价工具"
+echo "本机打开 http://127.0.0.1:5173"
+
+
+cd "$source_dir"
+"$runtime_venv/bin/python" -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 &
+backend_pid=$!
+(cd "$runtime_frontend" && exec ./node_modules/.bin/vite --host "$host") &
+frontend_pid=$!
+
+for attempt in {1..60}; do
+  if /usr/bin/curl -fsS http://127.0.0.1:5173 >/dev/null 2>&1; then
+    /usr/bin/open http://127.0.0.1:5173
+    break
+  fi
+  sleep 1
+done
+
+cleanup() {
+  kill -TERM $backend_pid $frontend_pid 2>/dev/null || true
+  wait $backend_pid $frontend_pid 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+wait $backend_pid $frontend_pid

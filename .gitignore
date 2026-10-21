@@ -1,0 +1,35 @@
+# Python and frontend dependencies/build output
+.venv/
+venv/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+
+# Machine-local business data and generated files
+/data/
+/output/
+/tmp/
+/point-quote-test-*/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Desktop and runtime files
+.DS_Store
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*-wal
+*-shm
