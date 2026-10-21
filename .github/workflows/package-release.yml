@@ -36,4 +36,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           ASSET: ${{ steps.package.outputs.asset }}
-        run: gh release upload "$RELEASE_TAG" "$ASSET" --clobber
+        run: gh -R "$GITHUB_REPOSITORY" release upload "$RELEASE_TAG" "$ASSET" --clobber
