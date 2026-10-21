@@ -41,11 +41,11 @@ export default function HelpGuide(){
       <div className="manual-body">
         <ul>
           <li><b>Mac</b>：双击工具根目录的 <kbd>start-mac.command</kbd>，或在终端执行该文件路径；支持项目位于已挂载的 NAS 共享目录，浏览器会自动打开。</li>
-          <li><b>Windows</b>：将 GitHub 下载的工具文件放在本机固定磁盘，再双击 <kbd>start-windows.bat</kbd>。业务数据保存在当前 Windows 用户的本机数据目录。</li>
-          <li><b>运行范围</b>：应用仅在本机打开。Mac 与 Windows 分别保存各自的数据，不会与 NAS 或其他电脑自动同步；没有 LAN/手机远程启动入口。</li>
+          <li><b>Windows</b>：从 GitHub Releases 下载版本 ZIP，解压到本机固定磁盘，再双击 <kbd>start-windows.bat</kbd>。若工具文件夹里有 <kbd>data</kbd> 文件夹，就使用便携数据；否则使用当前 Windows 用户的本机数据目录。</li>
+          <li><b>运行范围</b>：应用仅在本机打开。数据可手动复制到另一台电脑，但不会自动同步；不要在多台电脑同时打开同一份便携数据。Mac 从 NAS 启动时仍使用 Mac 本机数据。</li>
         </ul>
         <p className="manual-warn">打开后先看两个地方：左上角显示的版本号，以及右上角是否显示「版本已同步」。如果出现红色版本提示，说明前后端不一致，关掉重开一次工具。</p>
-        <p className="manual-warn">Mac 从 NAS 运行时，NAS 只提供程序文件；业务数据保存在本机。更新程序后，先关闭旧启动窗口再重新打开，否则已有服务可能继续使用旧代码。请定期备份本机业务数据目录。</p>
+        <p className="manual-warn">Mac 从 NAS 运行时，NAS 只提供程序文件；业务数据保存在本机。Mac/Windows 从本机工具目录启动时，若同级有 <code>data/</code> 则改用该目录，方便手动搬运。更新便携数据时，要把整个 <code>data/</code> 复制到新版本工具目录。请勿同时打开同一份便携数据。</p>
       </div>
     </details>
 
@@ -147,15 +147,15 @@ export default function HelpGuide(){
     <details className="manual-chapter">
       <summary>8. 数据存在哪 · 怎么备份</summary>
       <div className="manual-body">
-        <p>项目、产品、品牌、点位和报价保存在每台电脑自己的数据目录，SQLite 是运行数据库。Mac 数据目录为 <code>~/Library/Application Support/TaiyuanPointQuote/data/</code>；Windows 数据目录为 <code>%LOCALAPPDATA%\TaiyuanPointQuote\data\</code>。GitHub 程序包不包含这些业务数据。</p>
+        <p>项目、产品、品牌、点位和报价保存在当前选中的数据目录，SQLite 是运行数据库。本机工具目录旁如果有 <code>data/</code>，Mac/Windows 会使用它；没有时，Mac 回退到 <code>~/Library/Application Support/TaiyuanPointQuote/data/</code>，Windows 回退到 <code>%LOCALAPPDATA%\TaiyuanPointQuote\data\</code>。Mac 从 NAS 启动始终使用 Mac 本机数据目录。GitHub 下载包不包含业务数据。</p>
         <ul>
           <li>产品和品牌 → 本机数据目录 <code>01_产品库</code></li>
           <li>项目、图纸、点位、报价 → 本机数据目录 <code>06_客户档案/智能图纸与报价</code></li>
           <li>产品图片和品牌 Logo → 本机数据目录 <code>09_附件</code></li>
           <li>原始图纸、导出文件与 SQLite → 本机数据目录</li>
         </ul>
-        <p className="manual-warn">新版本下载包不含 <code>data/</code>。启动时会在本机建立数据目录；如果旧工具文件夹中存在 <code>data/</code>，首次启动会复制到本机数据目录并保留旧副本。更新程序不会把新版本的文件同步到本机数据目录。更换电脑时请单独备份并恢复该电脑的数据目录。</p>
-        <p>Mac 可以从 NAS 读取开发中的程序，但业务数据仍写入本机；NAS 不在线时不能从 NAS 启动。各台电脑不进行实时同步。</p>
+        <p className="manual-warn">版本下载包不含 <code>data/</code>。要在两台电脑之间转移数据，请先关闭工具，复制整个 <code>data/</code> 文件夹，在目标电脑解压后的工具根目录旁粘贴。更新到新版本时，也要把整个文件夹复制到新版本工具目录。若目标工具目录没有 <code>data/</code>，程序会使用本机数据目录。更换或合并数据前请先备份；不要同时打开同一份数据。</p>
+        <p>Mac 从 NAS 启动时不会使用 NAS 中的 <code>data/</code>，而会继续使用这台 Mac 的本机数据。NAS 不在线时不能从 NAS 启动。</p>
       </div>
     </details>
 

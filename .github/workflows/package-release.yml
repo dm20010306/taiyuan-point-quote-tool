@@ -1,0 +1,39 @@
+name: Package versioned download
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the published version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: git clone --depth 1 --branch "$RELEASE_TAG" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" source
+
+      - name: Create a versioned ZIP
+        id: package
+        run: |
+          version="$(tr -d '\r\n' < source/VERSION)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$version" != "$tag_version" ]]; then
+            echo "Release tag and VERSION file do not match." >&2
+            exit 1
+          fi
+          folder="态元智控工具V${version}"
+          mkdir "$folder"
+          git -C source archive HEAD | tar -x -C "$folder"
+          zip -qr "${folder}.zip" "$folder"
+          echo "asset=${folder}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Attach ZIP to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          ASSET: ${{ steps.package.outputs.asset }}
+        run: gh release upload "$RELEASE_TAG" "$ASSET" --clobber

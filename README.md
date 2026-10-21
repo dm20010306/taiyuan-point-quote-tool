@@ -2,14 +2,16 @@
 
 当前稳定版本：V3.3（用户已验收并批准）。当前 GitHub 初始化版本：V3.4-dev，尚未作为稳定版验收。报价系统支持网页编辑、预览及 PDF、Excel、PPTX 导出。详细结构、产品导入字段和迁移说明见 [docs/报价模块V2.md](docs/报价模块V2.md)。
 
-工具程序可以从 GitHub 私有仓库下载；仓库和下载包不包含任何业务 `data/`。每台电脑独立保存自己的业务数据，不会与 NAS 或其他电脑自动同步。Mac 数据位于 `~/Library/Application Support/TaiyuanPointQuote/data/`；Windows 数据位于 `%LOCALAPPDATA%\TaiyuanPointQuote\data\`。Mac 可以从 NAS 上的开发目录运行程序，但业务数据仍写入这台 Mac 的本机目录。首次从旧版启动时，启动脚本会把旧工具目录中的 `data/` 复制到本机数据目录，不删除旧目录。
+GitHub 仓库和下载包不包含业务 `data/`。正式版本会提供名为 `态元智控工具V<版本号>` 的下载压缩包，解压后目录也带有相同中文名称和版本号；请从 GitHub 仓库的 Releases 下载该版本包。GitHub 的 Code → Download ZIP 是源码归档，默认解压目录名由仓库和分支决定。
+
+Mac/Windows 从本机工具文件夹启动时，如果同级已有 `data/`，程序会读写它，适合手动复制整个文件夹在电脑间转移数据；没有 `data/` 时，继续使用电脑本机数据目录：Mac 为 `~/Library/Application Support/TaiyuanPointQuote/data/`，Windows 为 `%LOCALAPPDATA%\TaiyuanPointQuote\data\`。Mac 从 NAS 启动始终使用这台 Mac 的本机数据目录，不读写 NAS 上的 `data/`。程序不会自动同步；不要在多台电脑同时打开同一份便携 `data/`。GitHub 更新包不带业务数据，更新便携数据时需将整个 `data/` 复制到新版本工具文件夹。
 
 ## 启动
 
 只保留两个用户启动入口：
 
 - **Mac**：双击工具根目录的 `start-mac.command`，也可在终端执行完整脚本路径；Finder 与终端启动均按脚本所在目录解析，支持 NAS 挂载、中文和空格路径。
-- **Windows**：把从 GitHub 下载的工具文件放在本机固定磁盘，再双击 `start-windows.bat`。首次启动会建立本机业务数据目录；旧版工具目录中已有 `data/` 时会先复制到本机数据目录。
+- **Windows**：从 GitHub Releases 下载版本包，解压到本机固定磁盘，再双击 `start-windows.bat`。工具文件夹有 `data/` 时使用便携数据；没有时使用当前 Windows 用户的本机数据目录。Windows 不支持从网络盘运行。
 
 浏览器使用本机地址 <http://127.0.0.1:5173>。下载新版本时不要删除本机数据目录。本工具不提供 LAN/手机远程启动方式。
 更新代码后，先关闭上一次启动工具的 Terminal 窗口，再重新运行入口；已有服务可能被复用，旧后端不会自动热重载。
@@ -31,8 +33,9 @@
 
 | 路径 | 内容 |
 | --- | --- |
-| Mac `~/Library/Application Support/TaiyuanPointQuote/data/` | 这台 Mac 的本机业务数据，不上传 GitHub |
-| Windows `%LOCALAPPDATA%\TaiyuanPointQuote\data\` | 这台 Windows 电脑的本机业务数据，不上传 GitHub |
+| 本机工具文件夹 `data/` | 可选便携业务数据，用于手动转移，不上传 GitHub |
+| Mac `~/Library/Application Support/TaiyuanPointQuote/data/` | Mac 本机数据回退位置；从 NAS 启动时使用此处 |
+| Windows `%LOCALAPPDATA%\TaiyuanPointQuote\data\` | Windows 本机数据回退位置 |
 | `<本机数据目录>/01_产品库/` | 按所属系统中文名分目录的产品 Markdown 笔记，包含品牌、售价和图片路径 |
 | `<本机数据目录>/06_客户档案/智能图纸与报价/` | 本机项目、图纸点位和报价记录 |
 | `<本机数据目录>/09_附件/` | 产品图片、品牌 Logo 和业务附件 |
@@ -42,7 +45,7 @@
 | `backend/` | FastAPI、SQLite 与导出逻辑 |
 | `frontend/` | React/Vite 页面 |
 
-浏览器下载导出文件时，服务端也会在本机数据目录的 `exports/` 留一份。备份时复制对应电脑的整个业务数据目录。GitHub 版本更新只替换程序文件，不包含业务数据；不要把本机数据目录放进 Git 仓库。不同电脑的数据彼此独立，没有后台同步。
+浏览器下载导出文件时，服务端也会在当前选中的数据目录 `exports/` 留一份。备份或转移时复制整个 `data/`。不要把业务数据放进 GitHub；不同电脑没有后台同步，也不要同时打开同一份便携数据。
 
 ## 产品导入
 

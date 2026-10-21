@@ -5,7 +5,12 @@ source_dir="${POINT_QUOTE_SOURCE_DIR:-${0:A:h}}"
 runtime_root="${HOME}/Library/Caches/TaiyuanPointQuote"
 runtime_frontend="${runtime_root}/frontend"
 runtime_venv="${runtime_root}/venv"
-data_root="${HOME}/Library/Application Support/TaiyuanPointQuote/data"
+local_data_root="${HOME}/Library/Application Support/TaiyuanPointQuote/data"
+tool_volume="$(/bin/df -P "$source_dir" | /usr/bin/tail -n 1 | /usr/bin/awk '{print $1}')"
+data_root="$local_data_root"
+if [[ "$tool_volume" != //* && -d "$source_dir/data" ]]; then
+  data_root="$source_dir/data"
+fi
 export POINT_QUOTE_USER_DATA_DIR="$data_root"
 
 if [[ ! -f "$source_dir/backend/app.py" || ! -f "$source_dir/requirements.txt" || ! -d "$source_dir/frontend" ]]; then
@@ -17,8 +22,9 @@ fi
 # Resolve all project paths from this script, not from the shell's launch directory.
 cd "$source_dir"
 
-# Business data lives outside the downloaded/versioned program folder. On the
-# first run, preserve an existing tool-local data folder by copying it once.
+# A data folder beside a locally stored tool enables portable/manual transfer
+# mode. When this tool is launched from a network volume such as a NAS, keep
+# using this Mac's local data directory instead.
 if [[ ! -d "$data_root" ]]; then
   mkdir -p "${data_root:h}"
   if [[ -d "$source_dir/data" ]]; then

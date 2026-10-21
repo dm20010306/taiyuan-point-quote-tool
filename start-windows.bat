@@ -19,11 +19,19 @@ if not defined APP_VERSION (
 >>"%START_LOG%" echo Source: %~dp0
 
 rem Keep this file ASCII-only. Windows cmd may parse UTF-8 Chinese paths incorrectly.
-set "POINT_QUOTE_USER_DATA_DIR=%LOCALAPPDATA%\TaiyuanPointQuote\data"
+set "LOCAL_DATA_ROOT=%LOCALAPPDATA%\TaiyuanPointQuote\data"
 if not defined LOCALAPPDATA (
   set "FAIL_REASON=Windows local application data folder could not be located."
   goto failed
 )
+if exist "%~dp0data\" (
+  set "POINT_QUOTE_USER_DATA_DIR=%~dp0data"
+  set "DATA_MODE=portable tool-folder data"
+) else (
+  set "POINT_QUOTE_USER_DATA_DIR=%LOCAL_DATA_ROOT%"
+  set "DATA_MODE=per-computer local data"
+)
+>>"%START_LOG%" echo Data mode: %DATA_MODE%
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare-user-data.ps1" -SourceDataPath "%~dp0data" -DataRoot "%POINT_QUOTE_USER_DATA_DIR%"
 if errorlevel 1 (
   set "FAIL_REASON=Local business data could not be prepared. Existing data was left untouched."

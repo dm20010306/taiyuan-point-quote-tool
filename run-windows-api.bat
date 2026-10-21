@@ -1,6 +1,10 @@
 @echo off
 pushd "%~dp0"
-set "POINT_QUOTE_USER_DATA_DIR=%LOCALAPPDATA%\TaiyuanPointQuote\data"
+if exist "%~dp0data\" (
+  set "POINT_QUOTE_USER_DATA_DIR=%~dp0data"
+) else (
+  set "POINT_QUOTE_USER_DATA_DIR=%LOCALAPPDATA%\TaiyuanPointQuote\data"
+)
 PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify-windows-path.ps1" -Path "%~dp0." -DataRoot "%POINT_QUOTE_USER_DATA_DIR%"
 if errorlevel 1 exit /b 1
 set "PYTHONPYCACHEPREFIX=%TEMP%\pointquote-pycache"

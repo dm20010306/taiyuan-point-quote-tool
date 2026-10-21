@@ -1,16 +1,16 @@
 # CHANGELOG｜项目变更记录
 
-## 2026-10-21｜v3.4-dev GitHub 程序下载与本机数据隔离（RQ-020）
+## 2026-10-21｜v3.4-dev GitHub 下载与可搬运数据（RQ-020）
 
-- 目标：GitHub 私有仓库和用户下载包只含工具程序；每台电脑的业务 `data/` 独立保存在本机，程序更新不覆盖或删除数据。
+- 目标：GitHub 只发布程序；本机工具文件夹可选携带便携 `data/` 以便用户手动转移，NAS 启动继续使用 Mac 本机数据。
 - `backend/path_resolver.py`：支持由正式启动器传入 `POINT_QUOTE_USER_DATA_DIR`，数据位置与程序目录分离；未使用正式启动器的测试/开发调用保持旧目录默认行为。
-- Mac 启动器：数据目录改为 `~/Library/Application Support/TaiyuanPointQuote/data/`；首次启动时旧工具目录有 `data/` 且本机目标不存在时复制旧数据，原目录保留。NAS 只用于读取开发程序。
-- Windows 启动：增加本机数据初始化脚本，旧工具目录数据只在目标不存在时复制；本机数据位于 `%LOCALAPPDATA%\TaiyuanPointQuote\data\`，不使用镜像删除。
+- Mac 启动器：从本机程序目录启动且旁边有 `data/` 时使用便携数据；从 NAS 启动始终用 `~/Library/Application Support/TaiyuanPointQuote/data/`。本机目标不存在时仍可从旧工具目录迁移一次，源目录保留。
+- Windows 启动：工具目录旁有 `data/` 时使用便携数据，否则使用 `%LOCALAPPDATA%\TaiyuanPointQuote\data\`；增加 PowerShell UTF-8 BOM 兼容和数据初始化。
 - `.gitignore`：排除全部 `data/`、本机导出/临时内容、依赖、构建产物和常见凭证文件。
-- 帮助与 README：说明 GitHub 下载、独立本机数据、旧目录首次复制和本机备份路径。
+- 帮助与 README：说明便携 `data/` 手动转移、Mac 从 NAS 启动使用本机数据，以及 Releases 版本下载方式。
 - 备份：代码回退副本、完整快照和独立业务数据副本均已生成；数据副本 546 个文件校验一致，SQLite 逐字节一致。Mac 本机数据目录已复制现有 NAS 数据。
-- 测试：按本轮范围未运行自动化测试或构建；Mac/Windows 启动、迁移和更新尚未实机验证，故 `3.4-dev` 保持开发状态。
-- GitHub：等待本地 Git 内容安全审查及私有仓库首次上传后补记结果。
+- 测试：本轮未运行自动化测试或构建；便携数据选择、NAS 回退、版本包工作流和跨端迁移尚待 Mac/Windows 实测，故 `3.4-dev` 保持开发状态。
+- Release：新增发布后打包工作流，资产名及解压目录为 `态元智控工具V<版本号>`；用户应从 Releases 下载版本包，不使用 Code → Download ZIP 获取自定义根目录。
 
 ## 2026-10-20｜v3.3 发布：报价系统升级（RQ-019）
 
