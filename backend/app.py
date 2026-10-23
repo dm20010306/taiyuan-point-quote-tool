@@ -16,13 +16,13 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import fitz
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as XImage
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -164,6 +164,7 @@ def init_db():
         db.executescript("""
         CREATE TABLE IF NOT EXISTS device_types(id TEXT PRIMARY KEY,name TEXT NOT NULL,prefix TEXT NOT NULL,color TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,name TEXT NOT NULL,customer TEXT NOT NULL DEFAULT '',address TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT '进行中',signed INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS project_folders(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,sort_order INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS drawings(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,source_path TEXT NOT NULL,background_path TEXT NOT NULL,filename TEXT NOT NULL,page INTEGER NOT NULL DEFAULT 1,width INTEGER NOT NULL,height INTEGER NOT NULL,created_at TEXT NOT NULL,rotation INTEGER NOT NULL DEFAULT 0,legend_x REAL NOT NULL DEFAULT 0.025,legend_y REAL NOT NULL DEFAULT 0.025);
         CREATE TABLE IF NOT EXISTS brands(id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,brand_id TEXT NOT NULL REFERENCES brands(id),name TEXT NOT NULL,series TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',category TEXT NOT NULL REFERENCES device_types(id),standard_cents INTEGER NOT NULL,unit TEXT NOT NULL DEFAULT '个',params TEXT NOT NULL DEFAULT '',description TEXT NOT NULL DEFAULT '',image_path TEXT,enabled INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL);
@@ -196,12 +197,17 @@ def init_db():
         if "legend_items" not in columns:
             db.execute("ALTER TABLE drawings ADD COLUMN legend_items TEXT NOT NULL DEFAULT '{}'")
         project_columns = {r[1] for r in db.execute("PRAGMA table_info(projects)")}
+        if "folder_id" not in project_columns:
+            db.execute("ALTER TABLE projects ADD COLUMN folder_id TEXT")
         if "signed" not in project_columns:
             db.execute("ALTER TABLE projects ADD COLUMN signed INTEGER NOT NULL DEFAULT 0")
         if "shadow_strength" not in project_columns:
             db.execute("ALTER TABLE projects ADD COLUMN shadow_strength INTEGER NOT NULL DEFAULT 25")
         db.execute("CREATE TABLE IF NOT EXISTS floors(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,name TEXT NOT NULL,sort_order INTEGER NOT NULL DEFAULT 0)")
         db.execute("CREATE TABLE IF NOT EXISTS layers(id TEXT PRIMARY KEY,floor_id TEXT NOT NULL REFERENCES floors(id) ON DELETE CASCADE,name TEXT NOT NULL,sort_order INTEGER NOT NULL DEFAULT 0,visible INTEGER NOT NULL DEFAULT 1,locked INTEGER NOT NULL DEFAULT 0)")
+        floor_columns={r[1] for r in db.execute("PRAGMA table_info(floors)")}
+        if "visibility_initialized" not in floor_columns:
+            db.execute("ALTER TABLE floors ADD COLUMN visibility_initialized INTEGER NOT NULL DEFAULT 0")
         db.execute("CREATE INDEX IF NOT EXISTS idx_floors_project ON floors(project_id,sort_order)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_layers_floor ON layers(floor_id,sort_order)")
         brand_columns = {r[1] for r in db.execute("PRAGMA table_info(brands)")}
@@ -215,14 +221,40 @@ def init_db():
                 db.execute(f"ALTER TABLE brands ADD COLUMN {column} {definition}")
         db.execute("UPDATE brands SET updated_at=created_at WHERE updated_at='' OR updated_at IS NULL")
         point_columns = {r[1] for r in db.execute("PRAGMA table_info(points)")}
-        for column, definition in (("shape", "TEXT NOT NULL DEFAULT 'point'"), ("x2", "REAL"), ("y2", "REAL"), ("show_motor", "INTEGER NOT NULL DEFAULT 1"), ("fov_angle", "REAL NOT NULL DEFAULT 60"), ("layer_id", "TEXT"), ("line_width", "REAL NOT NULL DEFAULT 3")):
+        for column, definition in (("shape", "TEXT NOT NULL DEFAULT 'point'"), ("x2", "REAL"), ("y2", "REAL"), ("show_motor", "INTEGER NOT NULL DEFAULT 1"), ("fov_angle", "REAL NOT NULL DEFAULT 60"), ("layer_id", "TEXT"), ("line_width", "REAL NOT NULL DEFAULT 3"), ("curtain_style", "TEXT NOT NULL DEFAULT 'single'"), ("curtain_length", "REAL NOT NULL DEFAULT 0")):
             if column not in point_columns:
                 db.execute(f"ALTER TABLE points ADD COLUMN {column} {definition}")
+        drawing_columns = {r[1] for r in db.execute("PRAGMA table_info(drawings)")}
+        for column, definition in (
+            ("canvas_mode", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ("canvas_width", "INTEGER NOT NULL DEFAULT 0"),
+            ("canvas_height", "INTEGER NOT NULL DEFAULT 0"),
+            ("image_x", "REAL NOT NULL DEFAULT 0"),
+            ("image_y", "REAL NOT NULL DEFAULT 0"),
+            ("image_width", "REAL NOT NULL DEFAULT 0"),
+            ("image_height", "REAL NOT NULL DEFAULT 0"),
+            ("image_rotation", "REAL NOT NULL DEFAULT 0"),
+            ("guide_lines", "TEXT NOT NULL DEFAULT '[]'"),
+            ("is_blank", "INTEGER NOT NULL DEFAULT 0"),
+            ("crop_source_path", "TEXT"),
+            ("crop_source_width", "INTEGER"),
+            ("crop_source_height", "INTEGER"),
+            ("crop_frame_x", "REAL"),
+            ("crop_frame_y", "REAL"),
+            ("crop_frame_width", "REAL"),
+            ("crop_frame_height", "REAL"),
+            ("crop_left", "REAL"),
+            ("crop_top", "REAL"),
+            ("crop_right", "REAL"),
+            ("crop_bottom", "REAL"),
+        ):
+            if column not in drawing_columns:
+                db.execute(f"ALTER TABLE drawings ADD COLUMN {column} {definition}")
         for project in db.execute("SELECT id FROM projects").fetchall():
             floor = db.execute("SELECT id FROM floors WHERE project_id=? ORDER BY sort_order LIMIT 1", (project[0],)).fetchone()
             if not floor:
                 floor_id=uid()
-                db.execute("INSERT INTO floors(id,project_id,name,sort_order) VALUES(?,?,?,0)",(floor_id,project[0],"默认楼层"))
+                db.execute("INSERT INTO floors(id,project_id,name,sort_order,visibility_initialized) VALUES(?,?,?,0,1)",(floor_id,project[0],"默认楼层"))
             else: floor_id=floor[0]
             layer = db.execute("SELECT id FROM layers WHERE floor_id=? ORDER BY sort_order LIMIT 1",(floor_id,)).fetchone()
             if not layer:
@@ -231,8 +263,29 @@ def init_db():
             else: layer_id=layer[0]
             db.execute("UPDATE drawings SET floor_id=? WHERE project_id=? AND floor_id IS NULL",(floor_id,project[0]))
             db.execute("UPDATE points SET layer_id=? WHERE project_id=? AND layer_id IS NULL",(layer_id,project[0]))
+        # Floors with no plan get a persistent blank 16:9 canvas. A legacy floor
+        # with exactly one drawing can be upgraded without changing point data;
+        # floors with multiple drawings retain their old page-per-drawing model.
+        for floor_row in db.execute("SELECT id,project_id FROM floors").fetchall():
+            floor_id,project_id=floor_row
+            initialized=db.execute("SELECT visibility_initialized FROM floors WHERE id=?",(floor_id,)).fetchone()[0]
+            if not initialized:
+                first_layer=db.execute("SELECT id FROM layers WHERE floor_id=? ORDER BY sort_order,id LIMIT 1",(floor_id,)).fetchone()
+                if first_layer:
+                    db.execute("UPDATE layers SET visible=CASE WHEN id=? THEN 1 ELSE 0 END WHERE floor_id=?",(first_layer[0],floor_id))
+                db.execute("UPDATE floors SET visibility_initialized=1 WHERE id=?",(floor_id,))
+            floor_drawings=rows(db.execute("SELECT * FROM drawings WHERE floor_id=? ORDER BY created_at,id",(floor_id,)))
+            if not floor_drawings:
+                drawing_id=uid();blank_path=UPLOADS/f"{drawing_id}_blank.png"
+                Image.new("RGB",(1600,900),"white").save(blank_path,"PNG")
+                db.execute("INSERT INTO drawings(id,project_id,floor_id,source_path,background_path,filename,page,width,height,created_at,name,canvas_mode,canvas_width,canvas_height,image_x,image_y,image_width,image_height,image_rotation,guide_lines,is_blank) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(drawing_id,project_id,floor_id,blank_path.name,blank_path.name,"未导入主图纸.png",1,1600,900,now(),"主图纸","fixed",1600,900,0,0,1600,900,0,"[]",1))
+            elif len(floor_drawings)==1 and floor_drawings[0].get("canvas_mode")=="legacy":
+                drawing=floor_drawings[0];cw,ch=1600,900;fit_scale=min(cw/drawing["width"],ch/drawing["height"]);iw,ih=drawing["width"]*fit_scale,drawing["height"]*fit_scale
+                db.execute("UPDATE drawings SET canvas_mode='fixed',canvas_width=?,canvas_height=?,image_x=?,image_y=?,image_width=?,image_height=?,is_blank=0 WHERE id=?",(cw,ch,(cw-iw)/2,(ch-ih)/2,iw,ih,drawing["id"]))
         for t in TYPES:
             db.execute("INSERT INTO device_types VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,prefix=excluded.prefix,color=excluded.color", t)
+        # Old drawings retain their native image-sized canvas and point coordinates.
+        db.execute("UPDATE drawings SET canvas_width=width,canvas_height=height,image_width=width,image_height=height WHERE canvas_mode='legacy' AND canvas_width=0")
         db.execute("UPDATE drawings SET name=filename WHERE name='' OR name IS NULL")
         db.execute("UPDATE points SET shape='line',x2=MIN(1,x+0.12),y2=y WHERE type_id='curtain' AND (shape='point' OR x2 IS NULL)")
         db.execute("UPDATE points SET shape='sector',x2=MIN(1,x+0.12),y2=y,fov_angle=COALESCE(fov_angle,60) WHERE type_id='camera' AND (shape='point' OR x2 IS NULL)")
@@ -275,6 +328,15 @@ class ProjectIn(BaseModel):
     customer: str = Field(default="", max_length=120)
     address: str = Field(default="", max_length=240)
     status: str = Field(default="进行中", max_length=30)
+    folder_id: Optional[str] = None
+
+
+class ProjectFolderIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class ProjectDuplicateIn(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=120)
 
 
 class ProjectSignedIn(BaseModel):
@@ -330,6 +392,8 @@ class PointIn(BaseModel):
     show_motor: bool = True
     fov_angle: float = Field(default=60, ge=10, le=180)
     line_width: float = Field(default=3, ge=1, le=12)
+    curtain_style: str = Field(default="single", pattern="^(single|double|double_layer_single|double_layer_double)$")
+    curtain_length: float = Field(default=0, ge=0, le=5000)
 
 
 class PointPatch(BaseModel):
@@ -350,6 +414,8 @@ class PointPatch(BaseModel):
     show_motor: Optional[bool] = None
     fov_angle: Optional[float] = Field(default=None, ge=10, le=180)
     line_width: Optional[float] = Field(default=None, ge=1, le=12)
+    curtain_style: Optional[str] = Field(default=None, pattern="^(single|double|double_layer_single|double_layer_double)$")
+    curtain_length: Optional[float] = Field(default=None, ge=0, le=5000)
     layer_id: Optional[str] = None
 
 
@@ -384,6 +450,8 @@ class PointRestore(BaseModel):
     show_motor: bool = True
     fov_angle: float = Field(default=60, ge=10, le=180)
     line_width: float = Field(default=3, ge=1, le=12)
+    curtain_style: str = Field(default="single", pattern="^(single|double|double_layer_single|double_layer_double)$")
+    curtain_length: float = Field(default=0, ge=0, le=5000)
 
 
 class FloorIn(BaseModel):
@@ -411,6 +479,19 @@ class DrawingPatch(BaseModel):
     legend_x: Optional[float] = Field(default=None, ge=0, le=1)
     legend_y: Optional[float] = Field(default=None, ge=0, le=1)
     legend_items: Optional[dict[str,list[float]]] = None
+    image_x: Optional[float] = Field(default=None, ge=-3200, le=3200)
+    image_y: Optional[float] = Field(default=None, ge=-1800, le=1800)
+    image_width: Optional[float] = Field(default=None, gt=0, le=6400)
+    image_height: Optional[float] = Field(default=None, gt=0, le=3600)
+    image_rotation: Optional[float] = Field(default=None, ge=-3600, le=3600)
+    guide_lines: Optional[list[dict[str, Union[float, str]]]] = None
+
+
+class DrawingCropIn(BaseModel):
+    left: float = Field(ge=0, le=0.95)
+    top: float = Field(ge=0, le=0.95)
+    right: float = Field(ge=0.05, le=1)
+    bottom: float = Field(ge=0.05, le=1)
 
 
 class ProductBatchIn(BaseModel):
@@ -602,7 +683,7 @@ def projects():
     started = time.perf_counter()
     with connect() as db:
         scan_started = time.perf_counter()
-        result = rows(db.execute("SELECT p.*, (SELECT count(*) FROM points WHERE project_id=p.id AND type_id<>'non_smart_area') point_count, COALESCE((SELECT sum(subtotal_cents) FROM quote_lines ql JOIN quotes q ON q.id=ql.quote_id WHERE q.project_id=p.id),0)+COALESCE((SELECT sum(subtotal_cents) FROM manual_quote_lines ml JOIN quotes q ON q.id=ml.quote_id WHERE q.project_id=p.id),0) line_total_cents FROM projects p ORDER BY updated_at DESC"))
+        result = rows(db.execute("SELECT p.*,pf.name AS folder_name,(SELECT count(*) FROM points WHERE project_id=p.id AND type_id<>'non_smart_area') point_count,COALESCE((SELECT sum(subtotal_cents) FROM quote_lines ql JOIN quotes q ON q.id=ql.quote_id WHERE q.project_id=p.id),0)+COALESCE((SELECT sum(subtotal_cents) FROM manual_quote_lines ml JOIN quotes q ON q.id=ml.quote_id WHERE q.project_id=p.id),0) line_total_cents FROM projects p LEFT JOIN project_folders pf ON pf.id=p.folder_id ORDER BY updated_at DESC"))
         record_event("projectList.scan", operation="local_sqlite_index", projectCount=len(result),
             durationMs=round((time.perf_counter()-scan_started)*1000, 2), success=True)
         parse_started = time.perf_counter()
@@ -616,18 +697,191 @@ def projects():
         return result
 
 
+def persist_all_projects():
+    with connect() as db:
+        project_ids = [row[0] for row in db.execute("SELECT id FROM projects")]
+    for project_id in project_ids:
+        _persist_local_project(project_id)
+
+
+@app.get("/api/project-folders")
+def list_project_folders():
+    with connect() as db:
+        return rows(db.execute("SELECT * FROM project_folders ORDER BY sort_order,name"))
+
+
+@app.post("/api/project-folders", status_code=201)
+def create_project_folder(data: ProjectFolderIn):
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(422, "文件夹名称不能为空")
+    with connect() as db:
+        if db.execute("SELECT 1 FROM project_folders WHERE name=?", (name,)).fetchone():
+            raise HTTPException(409, "已存在同名文件夹")
+        order = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM project_folders").fetchone()[0]
+        db.execute("INSERT INTO project_folders VALUES(?,?,?,?,?)", (uid(), name, order, now(), now()))
+    persist_all_projects()
+    return list_project_folders()
+
+
+@app.patch("/api/project-folders/{folder_id}")
+def rename_project_folder(folder_id: str, data: ProjectFolderIn):
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(422, "文件夹名称不能为空")
+    with connect() as db:
+        one(db, "SELECT id FROM project_folders WHERE id=?", (folder_id,))
+        if db.execute("SELECT 1 FROM project_folders WHERE name=? AND id<>?", (name, folder_id)).fetchone():
+            raise HTTPException(409, "已存在同名文件夹")
+        db.execute("UPDATE project_folders SET name=?,updated_at=? WHERE id=?", (name, now(), folder_id))
+    persist_all_projects()
+    return list_project_folders()
+
+
+@app.delete("/api/project-folders/{folder_id}")
+def delete_project_folder(folder_id: str):
+    with connect() as db:
+        one(db, "SELECT id FROM project_folders WHERE id=?", (folder_id,))
+        db.execute("UPDATE projects SET folder_id=NULL,updated_at=? WHERE folder_id=?", (now(), folder_id))
+        db.execute("DELETE FROM project_folders WHERE id=?", (folder_id,))
+    persist_all_projects()
+    return list_project_folders()
+
+
 @app.post("/api/projects", status_code=201)
 def create_project(data: ProjectIn):
     p = {"id": uid(), **data.model_dump(), "signed": 0, "created_at": now(), "updated_at": now()}
+    floor_id,layer_id,drawing_id=uid(),uid(),uid()
+    blank_path=UPLOADS/f"{drawing_id}_blank.png"
+    Image.new("RGB",(1600,900),"white").save(blank_path,"PNG")
     with connect() as db:
-        db.execute("INSERT INTO projects(id,name,customer,address,status,created_at,updated_at) VALUES(:id,:name,:customer,:address,:status,:created_at,:updated_at)", p)
+        if p["folder_id"]:
+            one(db, "SELECT id FROM project_folders WHERE id=?", (p["folder_id"],))
+        db.execute("INSERT INTO projects(id,name,customer,address,status,signed,created_at,updated_at,folder_id) VALUES(:id,:name,:customer,:address,:status,:signed,:created_at,:updated_at,:folder_id)", p)
         db.execute("INSERT INTO quotes(id,project_id,discount_cents,note,updated_at,project_name,customer_name,quote_date) VALUES(?,?,?,?,?,?,?,?)", (uid(), p["id"], 0, "", now(), p["name"], p["customer"], now()[:10]))
-        floor_id,layer_id=uid(),uid()
-        db.execute("INSERT INTO floors(id,project_id,name,sort_order) VALUES(?,?,?,0)",(floor_id,p["id"],"默认楼层"))
+        db.execute("INSERT INTO floors(id,project_id,name,sort_order,visibility_initialized) VALUES(?,?,?,0,1)",(floor_id,p["id"],"默认楼层"))
         db.execute("INSERT INTO layers(id,floor_id,name,sort_order) VALUES(?,?,?,0)",(layer_id,floor_id,"默认图层"))
+        db.execute("""INSERT INTO drawings(id,project_id,floor_id,source_path,background_path,filename,page,width,height,created_at,name,canvas_mode,canvas_width,canvas_height,image_x,image_y,image_width,image_height,image_rotation,guide_lines,is_blank)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(drawing_id,p["id"],floor_id,blank_path.name,blank_path.name,"未导入主图纸.png",1,1600,900,now(),"主图纸","fixed",1600,900,0,0,1600,900,0,"[]",1))
     if PATHS.local_data_mode:
         _persist_local_project(p["id"])
     return p
+
+
+@app.post("/api/projects/{pid}/duplicate", status_code=201)
+def duplicate_project(pid: str, data: ProjectDuplicateIn = ProjectDuplicateIn()):
+    copied_files: list[Path] = []
+    file_map: dict[str, str] = {}
+    try:
+        with connect() as db:
+            source = one(db, "SELECT * FROM projects WHERE id=?", (pid,))
+            source_quote = one(db, "SELECT * FROM quotes WHERE project_id=?", (pid,))
+            project_id, quote_id = uid(), uid()
+            name = (data.name or "").strip() or f"{source['name']} 副本"
+            timestamp = now()
+            clone = {**source, "id": project_id, "name": name, "signed": 0,
+                     "created_at": timestamp, "updated_at": timestamp}
+            db.execute(
+                "INSERT INTO projects(id,name,customer,address,status,signed,created_at,updated_at,shadow_strength,folder_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (clone["id"], clone["name"], clone["customer"], clone["address"], clone["status"], 0,
+                 timestamp, timestamp, clone.get("shadow_strength", 25), clone.get("folder_id")),
+            )
+
+            floor_map: dict[str, str] = {}
+            for row in rows(db.execute("SELECT * FROM floors WHERE project_id=? ORDER BY sort_order,id", (pid,))):
+                new_id = uid(); floor_map[row["id"]] = new_id
+                values = {**row, "id": new_id, "project_id": project_id}
+                cols = list(values)
+                db.execute(f"INSERT INTO floors({','.join(cols)}) VALUES({','.join('?' for _ in cols)})", [values[c] for c in cols])
+
+            layer_map: dict[str, str] = {}
+            for row in rows(db.execute("SELECT l.* FROM layers l JOIN floors f ON f.id=l.floor_id WHERE f.project_id=? ORDER BY l.sort_order,l.id", (pid,))):
+                new_id = uid(); layer_map[row["id"]] = new_id
+                values = {**row, "id": new_id, "floor_id": floor_map[row["floor_id"]]}
+                cols = list(values)
+                db.execute(f"INSERT INTO layers({','.join(cols)}) VALUES({','.join('?' for _ in cols)})", [values[c] for c in cols])
+
+            drawing_rows = rows(db.execute("SELECT * FROM drawings WHERE project_id=? ORDER BY created_at,id", (pid,)))
+            drawing_map: dict[str, str] = {}
+            for row in drawing_rows:
+                new_id = uid(); drawing_map[row["id"]] = new_id
+                values = {**row, "id": new_id, "project_id": project_id,
+                          "floor_id": floor_map.get(row.get("floor_id"))}
+                for field in ("source_path", "background_path"):
+                    original = row.get(field)
+                    if not original:
+                        continue
+                    if original not in file_map:
+                        suffix = Path(original).suffix
+                        target_name = f"{uid()}{suffix}"
+                        source_path, target_path = UPLOADS / Path(original).name, UPLOADS / target_name
+                        if source_path.is_file():
+                            shutil.copy2(source_path, target_path)
+                            copied_files.append(target_path)
+                        file_map[original] = target_name
+                    values[field] = file_map[original]
+                cols = list(values)
+                db.execute(f"INSERT INTO drawings({','.join(cols)}) VALUES({','.join('?' for _ in cols)})", [values[c] for c in cols])
+
+            point_map: dict[str, str] = {}
+            for row in rows(db.execute("SELECT * FROM points WHERE project_id=? ORDER BY created_at,id", (pid,))):
+                new_id = uid(); point_map[row["id"]] = new_id
+                values = {**row, "id": new_id, "project_id": project_id,
+                          "drawing_id": drawing_map[row["drawing_id"]],
+                          "layer_id": layer_map.get(row.get("layer_id"))}
+                cols = list(values)
+                db.execute(f"INSERT INTO points({','.join(cols)}) VALUES({','.join('?' for _ in cols)})", [values[c] for c in cols])
+
+            for row in rows(db.execute("SELECT * FROM point_counters WHERE project_id=?", (pid,))):
+                db.execute("INSERT INTO point_counters(project_id,type_id,last_number) VALUES(?,?,?)",
+                           (project_id, row["type_id"], row["last_number"]))
+
+            cloned_quote = {**source_quote, "id": quote_id, "project_id": project_id,
+                            "project_name": name, "updated_at": timestamp}
+            cols = list(cloned_quote)
+            db.execute(f"INSERT INTO quotes({','.join(cols)}) VALUES({','.join('?' for _ in cols)})", [cloned_quote[c] for c in cols])
+
+            manual_map: dict[str, str] = {}
+            for table in ("extra_fees", "manual_quote_lines", "quote_lines", "quotation_systems", "quotation_items", "quotation_construction_fees", "quotation_versions"):
+                table_rows = rows(db.execute(f"SELECT * FROM {table} WHERE quote_id=?", (source_quote["id"],)))
+                for row in table_rows:
+                    values = dict(row); old_id = values.get("id")
+                    values["quote_id"] = quote_id
+                    if old_id:
+                        values["id"] = uid()
+                        if table == "manual_quote_lines":
+                            manual_map[old_id] = values["id"]
+                    if table == "quote_lines":
+                        values["point_id"] = point_map.get(values["point_id"], values["point_id"])
+                    if table == "quotation_versions":
+                        try:
+                            snapshot = json.loads(values["snapshot_json"])
+                            snapshot["quote_id"] = quote_id
+                            if isinstance(snapshot.get("project"), dict):
+                                snapshot["project"]["id"] = project_id
+                                snapshot["project"]["name"] = name
+                            if isinstance(snapshot.get("settings"), dict):
+                                snapshot["settings"]["project_name"] = name
+                            values["snapshot_json"] = json.dumps(snapshot, ensure_ascii=False)
+                        except (ValueError, TypeError):
+                            pass
+                    if table == "quotation_items":
+                        if values.get("source_type") == "points":
+                            values["source_key"] = point_map.get(values.get("source_key"), values.get("source_key"))
+                        elif values.get("source_type") == "manual":
+                            values["source_key"] = manual_map.get(values.get("source_key"), values.get("source_key"))
+                        elif values.get("source_type") == "temp":
+                            values["source_key"] = uid()
+                    cols = list(values)
+                    db.execute(f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' for _ in cols)})", [values[c] for c in cols])
+        if PATHS.local_data_mode:
+            _persist_local_project(project_id)
+        return get_project(project_id)
+    except Exception:
+        for path in copied_files:
+            try: path.unlink(missing_ok=True)
+            except OSError: pass
+        raise
 
 
 @app.get("/api/projects/{pid}")
@@ -637,6 +891,8 @@ def get_project(pid: str):
         p["drawings"] = rows(db.execute("SELECT * FROM drawings WHERE project_id=? ORDER BY created_at", (pid,)))
         for drawing in p["drawings"]:
             drawing["legend_items"]=json.loads(drawing.get("legend_items") or "{}")
+            try: drawing["guide_lines"]=json.loads(drawing.get("guide_lines") or "[]")
+            except Exception: drawing["guide_lines"]=[]
         p["floors"] = rows(db.execute("SELECT * FROM floors WHERE project_id=? ORDER BY sort_order,id",(pid,)))
         p["layers"] = rows(db.execute("SELECT l.* FROM layers l JOIN floors f ON f.id=l.floor_id WHERE f.project_id=? ORDER BY l.sort_order,l.id",(pid,)))
         p["points"] = [point_out(x) for x in rows(db.execute("SELECT * FROM points WHERE project_id=? ORDER BY created_at", (pid,)))]
@@ -645,12 +901,16 @@ def get_project(pid: str):
 
 @app.post("/api/projects/{pid}/floors",status_code=201)
 def create_floor(pid: str,data: FloorIn):
+    floor_id,layer_id,drawing_id=uid(),uid(),uid()
+    blank_path=UPLOADS/f"{drawing_id}_blank.png"
+    Image.new("RGB",(1600,900),"white").save(blank_path,"PNG")
     with connect() as db:
         one(db,"SELECT id FROM projects WHERE id=?",(pid,))
         order=db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM floors WHERE project_id=?",(pid,)).fetchone()[0]
-        floor_id,layer_id=uid(),uid()
-        db.execute("INSERT INTO floors VALUES(?,?,?,?)",(floor_id,pid,data.name.strip(),order))
+        db.execute("INSERT INTO floors(id,project_id,name,sort_order,visibility_initialized) VALUES(?,?,?,?,1)",(floor_id,pid,data.name.strip(),order))
         db.execute("INSERT INTO layers VALUES(?,?,?,?,?,?)",(layer_id,floor_id,"默认图层",0,1,0))
+        db.execute("""INSERT INTO drawings(id,project_id,floor_id,source_path,background_path,filename,page,width,height,created_at,name,canvas_mode,canvas_width,canvas_height,image_x,image_y,image_width,image_height,image_rotation,guide_lines,is_blank)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(drawing_id,pid,floor_id,blank_path.name,blank_path.name,"未导入主图纸.png",1,1600,900,now(),"主图纸","fixed",1600,900,0,0,1600,900,0,"[]",1))
     return get_project(pid)
 
 
@@ -719,7 +979,7 @@ class CopyToFloor(BaseModel):
 
 def _copy_point_to(db,point: dict,drawing_id: str,layer_id: str):
     point_id=uid(); number=next_number(db,point["project_id"],point["type_id"])
-    fields=("id","project_id","drawing_id","layer_id","type_id","number","name","room","quantity","note","x","y","size","color","locked","product_id","product_snapshot","standard_cents","actual_cents","created_at","updated_at","shape","x2","y2","show_motor","fov_angle","line_width")
+    fields=("id","project_id","drawing_id","layer_id","type_id","number","name","room","quantity","note","x","y","size","color","locked","product_id","product_snapshot","standard_cents","actual_cents","created_at","updated_at","shape","x2","y2","show_motor","fov_angle","line_width","curtain_style","curtain_length")
     values={**point,"id":point_id,"drawing_id":drawing_id,"layer_id":layer_id,"number":number,"name":number if point["name"]==point["number"] else point["name"],"created_at":now(),"updated_at":now()}
     db.execute("INSERT INTO points("+",".join(fields)+") VALUES("+",".join("?" for _ in fields)+")",tuple(values[field] for field in fields))
     sync_line(db,point_id)
@@ -745,7 +1005,12 @@ def copy_layer(pid: str,layer_id: str,data: CopyToFloor):
 def update_project(pid: str, data: ProjectIn):
     with connect() as db:
         old=one(db, "SELECT * FROM projects WHERE id=?", (pid,))
-        db.execute("UPDATE projects SET name=?,customer=?,address=?,status=?,updated_at=? WHERE id=?", (data.name,data.customer,data.address,data.status,now(),pid))
+        folder_id = old.get("folder_id")
+        if "folder_id" in data.model_fields_set:
+            folder_id = data.folder_id
+            if folder_id:
+                one(db, "SELECT id FROM project_folders WHERE id=?", (folder_id,))
+        db.execute("UPDATE projects SET name=?,customer=?,address=?,status=?,folder_id=?,updated_at=? WHERE id=?", (data.name,data.customer,data.address,data.status,folder_id,now(),pid))
         db.execute("UPDATE quotes SET project_name=CASE WHEN project_name=? OR project_name='' THEN ? ELSE project_name END,customer_name=CASE WHEN customer_name=? OR customer_name='' THEN ? ELSE customer_name END WHERE project_id=?",(old["name"],data.name,old["customer"],data.customer,pid))
     return get_project(pid)
 
@@ -785,20 +1050,22 @@ def delete_project(pid: str):
 
 
 @app.post("/api/projects/{pid}/drawings", status_code=201)
-async def upload_drawing(pid: str, file: UploadFile = File(...), page: int = Form(1), floor_id: Optional[str] = Form(None)):
+async def upload_drawing(pid: str, file: UploadFile = File(...), page: int = Form(1), floor_id: Optional[str] = Form(None), drawing_id: Optional[str] = Form(None)):
     with connect() as db:
         one(db, "SELECT id FROM projects WHERE id=?", (pid,))
         if floor_id: one(db,"SELECT id FROM floors WHERE id=? AND project_id=?",(floor_id,pid))
         else: floor_id=one(db,"SELECT id FROM floors WHERE project_id=? ORDER BY sort_order LIMIT 1",(pid,))["id"]
+        target=one(db,"SELECT * FROM drawings WHERE id=? AND project_id=? AND floor_id=?",(drawing_id,pid,floor_id)) if drawing_id else None
     ext = Path(file.filename or "").suffix.lower()
     if ext not in (".png", ".jpg", ".jpeg", ".pdf"):
         raise HTTPException(422, "仅支持 JPG、PNG、PDF")
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(413, "文件不能超过 50 MB")
-    did = uid()
-    source = UPLOADS / f"{did}{ext}"
-    background = UPLOADS / f"{did}_background.png"
+    did = target["id"] if target else uid()
+    file_token=uid()
+    source = UPLOADS / f"{file_token}{ext}"
+    background = UPLOADS / f"{file_token}_background.png"
     try:
         if ext == ".pdf":
             doc = fitz.open(stream=content, filetype="pdf")
@@ -819,10 +1086,17 @@ async def upload_drawing(pid: str, file: UploadFile = File(...), page: int = For
         raise HTTPException(422, "图纸文件无法读取")
     source.write_bytes(content)
     drawing_name = Path(file.filename or "图纸").stem + (f" · 第 {page} 页" if ext == ".pdf" else "")
-    d = {"id":did,"project_id":pid,"floor_id":floor_id,"source_path":source.name,"background_path":background.name,"filename":file.filename,"page":page,"width":width,"height":height,"created_at":now(),"name":drawing_name,"rotation":0,"legend_x":0.025,"legend_y":0.025}
+    d = {"id":did,"project_id":pid,"floor_id":floor_id,"source_path":source.name,"background_path":background.name,"filename":file.filename,"page":page,"width":width,"height":height,"created_at":target["created_at"] if target else now(),"name":drawing_name,"rotation":0,"legend_x":0.025,"legend_y":0.025}
     with connect() as db:
-        db.execute("INSERT INTO drawings(id,project_id,floor_id,source_path,background_path,filename,page,width,height,created_at,name) VALUES(:id,:project_id,:floor_id,:source_path,:background_path,:filename,:page,:width,:height,:created_at,:name)", d)
+        if target and target.get("canvas_mode")=="fixed":
+            cw,ch=target["canvas_width"] or 1600,target["canvas_height"] or 900
+            fit_scale=min(cw/width,ch/height); image_width,image_height=width*fit_scale,height*fit_scale
+            d.update(canvas_mode="fixed",canvas_width=cw,canvas_height=ch,image_x=(cw-image_width)/2,image_y=(ch-image_height)/2,image_width=image_width,image_height=image_height,image_rotation=0,guide_lines=target.get("guide_lines","[]"),is_blank=0)
+            db.execute("""UPDATE drawings SET source_path=:source_path,background_path=:background_path,filename=:filename,page=:page,width=:width,height=:height,name=:name,image_x=:image_x,image_y=:image_y,image_width=:image_width,image_height=:image_height,image_rotation=0,is_blank=0,crop_source_path=NULL,crop_source_width=NULL,crop_source_height=NULL,crop_frame_x=NULL,crop_frame_y=NULL,crop_frame_width=NULL,crop_frame_height=NULL,crop_left=NULL,crop_top=NULL,crop_right=NULL,crop_bottom=NULL WHERE id=:id""",d)
+        else:
+            db.execute("INSERT INTO drawings(id,project_id,floor_id,source_path,background_path,filename,page,width,height,created_at,name,canvas_mode,canvas_width,canvas_height,image_x,image_y,image_width,image_height,image_rotation,guide_lines,is_blank) VALUES(:id,:project_id,:floor_id,:source_path,:background_path,:filename,:page,:width,:height,:created_at,:name,'legacy',:width,:height,0,0,:width,:height,0,'[]',0)",d)
         db.execute("UPDATE projects SET updated_at=? WHERE id=?", (now(),pid))
+        d.update(canvas_mode=(target.get("canvas_mode") if target else "legacy"),canvas_width=target.get("canvas_width") if target else width,canvas_height=target.get("canvas_height") if target else height,image_x=target.get("image_x",0) if target else 0,image_y=target.get("image_y",0) if target else 0,image_width=target.get("image_width") if target else width,image_height=target.get("image_height") if target else height,image_rotation=target.get("image_rotation",0) if target else 0,guide_lines=target.get("guide_lines","[]") if target else "[]",is_blank=0)
     return d
 
 
@@ -831,20 +1105,33 @@ def copy_drawing(pid: str,drawing_id: str,data: CopyToFloor):
     with connect() as db:
         source=one(db,"SELECT * FROM drawings WHERE id=? AND project_id=?",(drawing_id,pid))
         one(db,"SELECT id FROM floors WHERE id=? AND project_id=?",(data.floor_id,pid))
-        new_id=uid()
+        target_canvas=db.execute("SELECT * FROM drawings WHERE floor_id=? AND canvas_mode='fixed' ORDER BY created_at,id LIMIT 1",(data.floor_id,)).fetchone() if source.get("canvas_mode")=="fixed" else None
+        new_id=dict(target_canvas)["id"] if target_canvas else uid()
+        file_token=uid()
         for key in ("source_path","background_path"):
             original=UPLOADS/source[key]
             if not original.is_file(): raise HTTPException(404,"图纸源文件不存在")
-            destination=UPLOADS/(new_id+("_background" if key=="background_path" else "")+original.suffix)
+            destination=UPLOADS/(file_token+("_background" if key=="background_path" else "")+original.suffix)
             shutil.copy2(original,destination)
-        db.execute("INSERT INTO drawings(id,project_id,floor_id,source_path,background_path,filename,page,width,height,created_at,name,rotation,legend_x,legend_y,legend_items) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(new_id,pid,data.floor_id,new_id+Path(source["source_path"]).suffix,new_id+"_background"+Path(source["background_path"]).suffix,source["filename"],source["page"],source["width"],source["height"],now(),source["name"]+" 副本",source["rotation"],source["legend_x"],source["legend_y"],source["legend_items"]))
+        copied_source=file_token+Path(source["source_path"]).suffix
+        copied_background=file_token+"_background"+Path(source["background_path"]).suffix
+        copied_crop_source=None
+        if source.get("crop_source_path"):
+            crop_original=UPLOADS/source["crop_source_path"]
+            if not crop_original.is_file(): raise HTTPException(404,"裁剪原图文件不存在")
+            copied_crop_source=file_token+"_crop_source"+crop_original.suffix
+            shutil.copy2(crop_original,UPLOADS/copied_crop_source)
+        if target_canvas:
+            db.execute("UPDATE drawings SET source_path=?,background_path=?,filename=?,page=?,width=?,height=?,name=?,rotation=?,legend_x=?,legend_y=?,legend_items=?,image_x=?,image_y=?,image_width=?,image_height=?,image_rotation=?,guide_lines=?,is_blank=0,crop_source_path=?,crop_source_width=?,crop_source_height=?,crop_frame_x=?,crop_frame_y=?,crop_frame_width=?,crop_frame_height=?,crop_left=?,crop_top=?,crop_right=?,crop_bottom=? WHERE id=?",(copied_source,copied_background,source["filename"],source["page"],source["width"],source["height"],source["name"]+" 副本",source["rotation"],source["legend_x"],source["legend_y"],source["legend_items"],source.get("image_x",0),source.get("image_y",0),source.get("image_width",source["width"]),source.get("image_height",source["height"]),source.get("image_rotation",0),source.get("guide_lines","[]"),copied_crop_source,source.get("crop_source_width"),source.get("crop_source_height"),source.get("crop_frame_x"),source.get("crop_frame_y"),source.get("crop_frame_width"),source.get("crop_frame_height"),source.get("crop_left"),source.get("crop_top"),source.get("crop_right"),source.get("crop_bottom"),new_id))
+        else:
+            db.execute("INSERT INTO drawings(id,project_id,floor_id,source_path,background_path,filename,page,width,height,created_at,name,rotation,legend_x,legend_y,legend_items,canvas_mode,canvas_width,canvas_height,image_x,image_y,image_width,image_height,image_rotation,guide_lines,is_blank,crop_source_path,crop_source_width,crop_source_height,crop_frame_x,crop_frame_y,crop_frame_width,crop_frame_height,crop_left,crop_top,crop_right,crop_bottom) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(new_id,pid,data.floor_id,copied_source,copied_background,source["filename"],source["page"],source["width"],source["height"],now(),source["name"]+" 副本",source["rotation"],source["legend_x"],source["legend_y"],source["legend_items"],source.get("canvas_mode","legacy"),source.get("canvas_width",source["width"]),source.get("canvas_height",source["height"]),source.get("image_x",0),source.get("image_y",0),source.get("image_width",source["width"]),source.get("image_height",source["height"]),source.get("image_rotation",0),source.get("guide_lines","[]"),source.get("is_blank",0),copied_crop_source,source.get("crop_source_width"),source.get("crop_source_height"),source.get("crop_frame_x"),source.get("crop_frame_y"),source.get("crop_frame_width"),source.get("crop_frame_height"),source.get("crop_left"),source.get("crop_top"),source.get("crop_right"),source.get("crop_bottom")))
     return get_project(pid)
 
 
 @app.patch("/api/projects/{pid}/drawings/{drawing_id}")
 def rename_drawing(pid: str, drawing_id: str, data: DrawingPatch):
     with connect() as db:
-        one(db, "SELECT id FROM drawings WHERE id=? AND project_id=?", (drawing_id, pid))
+        drawing=one(db, "SELECT * FROM drawings WHERE id=? AND project_id=?", (drawing_id, pid))
         changes=[]; values=[]
         if data.name is not None: changes.append("name=?"); values.append(data.name.strip())
         if data.legend_x is not None: changes.append("legend_x=?"); values.append(data.legend_x)
@@ -853,8 +1140,52 @@ def rename_drawing(pid: str, drawing_id: str, data: DrawingPatch):
             if any((key not in TYPE_MAP and not (key.startswith("other::") and len(key)<=110)) or len(value)!=2 or any(not isinstance(v,(int,float)) or not 0<=v<=1 for v in value) for key,value in data.legend_items.items()):
                 raise HTTPException(422,"图例坐标无效")
             changes.append("legend_items=?"); values.append(json.dumps(data.legend_items,ensure_ascii=False))
+        for key in ("image_x","image_y","image_width","image_height","image_rotation"):
+            value=getattr(data,key)
+            if value is not None:
+                changes.append(f"{key}=?"); values.append(value)
+                if drawing.get("crop_source_path"):
+                    if key=="image_x" and drawing.get("image_x") is not None:
+                        changes.append("crop_frame_x=?"); values.append((drawing.get("crop_frame_x") if drawing.get("crop_frame_x") is not None else drawing["image_x"])+(value-drawing["image_x"]))
+                    elif key=="image_y" and drawing.get("image_y") is not None:
+                        changes.append("crop_frame_y=?"); values.append((drawing.get("crop_frame_y") if drawing.get("crop_frame_y") is not None else drawing["image_y"])+(value-drawing["image_y"]))
+                    elif key=="image_width" and drawing.get("crop_left") is not None and drawing.get("crop_right",1)>drawing["crop_left"]:
+                        changes.append("crop_frame_width=?"); values.append(value/(drawing["crop_right"]-drawing["crop_left"]))
+                    elif key=="image_height" and drawing.get("crop_top") is not None and drawing.get("crop_bottom",1)>drawing["crop_top"]:
+                        changes.append("crop_frame_height=?"); values.append(value/(drawing["crop_bottom"]-drawing["crop_top"]))
+        if data.guide_lines is not None:
+            if len(data.guide_lines)>100 or any(item.get("axis") not in {"x","y"} or not isinstance(item.get("position"),(int,float)) or not 0<=item["position"]<=1 for item in data.guide_lines):
+                raise HTTPException(422,"参考线数据无效")
+            changes.append("guide_lines=?"); values.append(json.dumps(data.guide_lines,ensure_ascii=False))
         if not changes: raise HTTPException(422,"没有可更新的图纸字段")
         db.execute(f"UPDATE drawings SET {','.join(changes)} WHERE id=?", (*values,drawing_id))
+        db.execute("UPDATE projects SET updated_at=? WHERE id=?", (now(), pid))
+    return get_project(pid)
+
+
+@app.post("/api/projects/{pid}/drawings/{drawing_id}/make-main")
+def make_drawing_main(pid: str, drawing_id: str):
+    """Promote a legacy page to a 16:9 floor canvas without changing point coordinates."""
+    with connect() as db:
+        drawing = one(db, "SELECT * FROM drawings WHERE id=? AND project_id=?", (drawing_id, pid))
+        if drawing.get("canvas_mode") == "fixed":
+            return get_project(pid)
+        existing = db.execute(
+            "SELECT id FROM drawings WHERE floor_id=? AND canvas_mode='fixed' AND id<>? LIMIT 1",
+            (drawing["floor_id"], drawing_id),
+        ).fetchone()
+        if existing:
+            raise HTTPException(409, "本楼层已有主图纸，请先切换到该主图纸")
+        canvas_width, canvas_height = 1600, 900
+        scale = min(canvas_width / drawing["width"], canvas_height / drawing["height"])
+        image_width, image_height = drawing["width"] * scale, drawing["height"] * scale
+        db.execute(
+            """UPDATE drawings SET canvas_mode='fixed',canvas_width=?,canvas_height=?,
+               image_x=?,image_y=?,image_width=?,image_height=?,image_rotation=0,
+               guide_lines='[]',is_blank=0 WHERE id=?""",
+            (canvas_width, canvas_height, (canvas_width-image_width)/2,
+             (canvas_height-image_height)/2, image_width, image_height, drawing_id),
+        )
         db.execute("UPDATE projects SET updated_at=? WHERE id=?", (now(), pid))
     return get_project(pid)
 
@@ -884,22 +1215,67 @@ def rotate_drawing(pid: str, drawing_id: str):
     return get_project(pid)
 
 
+@app.post("/api/projects/{pid}/drawings/{drawing_id}/crop")
+def crop_drawing(pid: str, drawing_id: str, data: DrawingCropIn):
+    if data.right-data.left<0.05 or data.bottom-data.top<0.05: raise HTTPException(422,"裁剪区域至少保留原图的 5%")
+    with connect() as db:
+        drawing=one(db,"SELECT * FROM drawings WHERE id=? AND project_id=?",(drawing_id,pid))
+        if drawing.get("canvas_mode")!="fixed": raise HTTPException(409,"只有 16:9 楼层画布支持裁剪主图纸")
+        source_name=drawing.get("crop_source_path") or drawing["background_path"]
+        source_path=UPLOADS/source_name
+        if not source_path.is_file(): raise HTTPException(404,"主图纸原图文件不存在")
+        with Image.open(source_path) as opened:
+            source=opened.convert("RGB")
+        width,height=source.size
+        old_left=drawing.get("crop_left") if drawing.get("crop_left") is not None else 0.0
+        old_top=drawing.get("crop_top") if drawing.get("crop_top") is not None else 0.0
+        old_right=drawing.get("crop_right") if drawing.get("crop_right") is not None else 1.0
+        old_bottom=drawing.get("crop_bottom") if drawing.get("crop_bottom") is not None else 1.0
+        old_xspan,old_yspan=old_right-old_left,old_bottom-old_top
+        if old_xspan<=0 or old_yspan<=0: raise HTTPException(409,"已有裁剪范围无效，请先恢复原图")
+        base_x=drawing.get("crop_frame_x") if drawing.get("crop_frame_x") is not None else drawing.get("image_x",0)
+        base_y=drawing.get("crop_frame_y") if drawing.get("crop_frame_y") is not None else drawing.get("image_y",0)
+        base_width=drawing.get("crop_frame_width") if drawing.get("crop_frame_width") is not None else drawing.get("image_width",width)
+        base_height=drawing.get("crop_frame_height") if drawing.get("crop_frame_height") is not None else drawing.get("image_height",height)
+        points=rows(db.execute("SELECT id,x,y,x2,y2 FROM points WHERE drawing_id=?",(drawing_id,)))
+        for point in points:
+            for x,y in ((point["x"],point["y"]),(point.get("x2"),point.get("y2"))):
+                if x is not None and y is not None:
+                    original_x=old_left+x*old_xspan; original_y=old_top+y*old_yspan
+                    if not (data.left<=original_x<=data.right and data.top<=original_y<=data.bottom):
+                        raise HTTPException(409,"裁剪选区未完整包含所有点位，请先移动点位或扩大裁剪范围")
+        x1=round(data.left*width);y1=round(data.top*height);x2=max(x1+1,round(data.right*width));y2=max(y1+1,round(data.bottom*height));box=(x1,y1,min(width,x2),min(height,y2))
+        cropped=source.crop(box); new_path=UPLOADS/f"{uid()}_cropped.png";cropped.save(new_path,"PNG")
+        xspan,yspan=data.right-data.left,data.bottom-data.top
+        db.execute("UPDATE drawings SET background_path=?,width=?,height=?,image_x=?,image_y=?,image_width=?,image_height=?,crop_source_path=?,crop_source_width=?,crop_source_height=?,crop_frame_x=?,crop_frame_y=?,crop_frame_width=?,crop_frame_height=?,crop_left=?,crop_top=?,crop_right=?,crop_bottom=? WHERE id=?",(new_path.name,cropped.width,cropped.height,base_x+base_width*data.left,base_y+base_height*data.top,base_width*xspan,base_height*yspan,source_name,width,height,base_x,base_y,base_width,base_height,data.left,data.top,data.right,data.bottom,drawing_id))
+        for point in points:
+            original_x=old_left+point["x"]*old_xspan; original_y=old_top+point["y"]*old_yspan
+            x=(original_x-data.left)/xspan;y=(original_y-data.top)/yspan
+            original_x2=old_left+point["x2"]*old_xspan if point.get("x2") is not None else None
+            original_y2=old_top+point["y2"]*old_yspan if point.get("y2") is not None else None
+            x2=(original_x2-data.left)/xspan if original_x2 is not None else None
+            y2=(original_y2-data.top)/yspan if original_y2 is not None else None
+            db.execute("UPDATE points SET x=?,y=?,x2=?,y2=?,updated_at=? WHERE id=?",(x,y,x2,y2,now(),point["id"]))
+        db.execute("UPDATE projects SET updated_at=? WHERE id=?",(now(),pid))
+    return get_project(pid)
+
+
 @app.delete("/api/projects/{pid}/drawings/{drawing_id}")
 def delete_drawing(pid: str, drawing_id: str):
     with connect() as db:
         drawing = one(db, "SELECT * FROM drawings WHERE id=? AND project_id=?", (drawing_id, pid))
         db.execute("DELETE FROM drawings WHERE id=?", (drawing_id,))
         db.execute("UPDATE projects SET updated_at=? WHERE id=?", (now(), pid))
-    for key in ("source_path", "background_path"):
-        path = UPLOADS / drawing[key]
-        if path.is_file():
-            path.unlink()
+    for filename in {drawing.get("source_path"),drawing.get("background_path"),drawing.get("crop_source_path")}:
+        if filename:
+            path=UPLOADS/filename
+            if path.is_file(): path.unlink()
     return {"ok": True}
 
 
 @app.get("/api/files/{filename}")
 def file(filename: str):
-    if not re.fullmatch(r"[a-f0-9]{32}(?:_background)?\.(?:png|jpg|jpeg|webp|pdf)", filename):
+    if not re.fullmatch(r"[a-f0-9]{32}(?:_background|_blank|_cropped|_crop_source)?\.(?:png|jpg|jpeg|webp|pdf)", filename):
         raise HTTPException(404)
     path = UPLOADS / filename
     if not path.exists():
@@ -1536,7 +1912,7 @@ def create_point(pid: str, data: PointIn, drawing_id: str):
         x2 = data.x2 if data.x2 is not None else (min(1, data.x + .12) if shape != "point" else None)
         y2 = data.y2 if data.y2 is not None else (data.y if shape in {"line","sector"} else min(1, data.y + .08) if shape == "area" else None)
         standard=product["standard_cents"] if product else None
-        db.execute("INSERT INTO points(id,project_id,drawing_id,type_id,number,name,room,quantity,note,x,y,size,color,locked,product_id,product_snapshot,standard_cents,actual_cents,created_at,updated_at,shape,x2,y2,show_motor,fov_angle) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(point_id,pid,drawing_id,data.type_id,number,data.name or number,data.room,data.quantity,data.note,data.x,data.y,data.size,data.color or TYPE_MAP[data.type_id][3],int(data.locked),product["id"] if product else None,json.dumps(snapshot,ensure_ascii=False) if snapshot else None,standard,standard,now(),now(),shape,x2,y2,int(data.show_motor),data.fov_angle))
+        db.execute("INSERT INTO points(id,project_id,drawing_id,type_id,number,name,room,quantity,note,x,y,size,color,locked,product_id,product_snapshot,standard_cents,actual_cents,created_at,updated_at,shape,x2,y2,show_motor,fov_angle,curtain_style,curtain_length) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(point_id,pid,drawing_id,data.type_id,number,data.name or number,data.room,data.quantity,data.note,data.x,data.y,data.size,data.color or TYPE_MAP[data.type_id][3],int(data.locked),product["id"] if product else None,json.dumps(snapshot,ensure_ascii=False) if snapshot else None,standard,standard,now(),now(),shape,x2,y2,int(data.show_motor),data.fov_angle,data.curtain_style,data.curtain_length))
         db.execute("UPDATE points SET layer_id=?,line_width=? WHERE id=?",(layer_id,data.line_width,point_id))
         sync_line(db,point_id)
         db.execute("UPDATE projects SET updated_at=? WHERE id=?",(now(),pid))
@@ -1599,8 +1975,8 @@ def restore_point(data: PointRestore):
         layer_id=data.layer_id or one(db,"SELECT id FROM layers WHERE floor_id=? ORDER BY sort_order LIMIT 1",(floor,))["id"]
         one(db,"SELECT id FROM layers WHERE id=? AND floor_id=?",(layer_id,floor))
         old=db.execute("SELECT created_at FROM points WHERE id=?",(data.id,)).fetchone()
-        values=(data.id,data.project_id,data.drawing_id,data.type_id,data.number,data.name,data.room,data.quantity,data.note,data.x,data.y,data.size,data.color,data.locked,data.product_id,json.dumps(data.product_snapshot,ensure_ascii=False) if data.product_snapshot else None,money(data.standard_price) if data.standard_price is not None else None,money(data.actual_price) if data.actual_price is not None else None,old[0] if old else now(),now(),data.shape,data.x2,data.y2,int(data.show_motor),data.fov_angle)
-        db.execute("INSERT OR REPLACE INTO points(id,project_id,drawing_id,type_id,number,name,room,quantity,note,x,y,size,color,locked,product_id,product_snapshot,standard_cents,actual_cents,created_at,updated_at,shape,x2,y2,show_motor,fov_angle) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",values)
+        values=(data.id,data.project_id,data.drawing_id,data.type_id,data.number,data.name,data.room,data.quantity,data.note,data.x,data.y,data.size,data.color,data.locked,data.product_id,json.dumps(data.product_snapshot,ensure_ascii=False) if data.product_snapshot else None,money(data.standard_price) if data.standard_price is not None else None,money(data.actual_price) if data.actual_price is not None else None,old[0] if old else now(),now(),data.shape,data.x2,data.y2,int(data.show_motor),data.fov_angle,data.curtain_style,data.curtain_length)
+        db.execute("INSERT OR REPLACE INTO points(id,project_id,drawing_id,type_id,number,name,room,quantity,note,x,y,size,color,locked,product_id,product_snapshot,standard_cents,actual_cents,created_at,updated_at,shape,x2,y2,show_motor,fov_angle,curtain_style,curtain_length) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",values)
         db.execute("UPDATE points SET layer_id=?,line_width=? WHERE id=?",(layer_id,data.line_width,data.id))
         sync_line(db,data.id)
         db.execute("UPDATE projects SET updated_at=? WHERE id=?",(now(),data.project_id))
@@ -1623,7 +1999,7 @@ def duplicate_point(point_id: str):
         p=one(db,"SELECT * FROM points WHERE id=?",(point_id,))
         new_id=uid(); number=next_number(db,p["project_id"],p["type_id"])
         dx=.03; dy=.03
-        db.execute("INSERT INTO points(id,project_id,drawing_id,type_id,number,name,room,quantity,note,x,y,size,color,locked,product_id,product_snapshot,standard_cents,actual_cents,created_at,updated_at,shape,x2,y2,show_motor,fov_angle) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(new_id,p["project_id"],p["drawing_id"],p["type_id"],number,number if p["name"]==p["number"] else p["name"],p["room"],p["quantity"],p["note"],min(1,p["x"]+dx),min(1,p["y"]+dy),p["size"],p["color"],0,p["product_id"],p["product_snapshot"],p["standard_cents"],p["actual_cents"],now(),now(),p.get("shape") or "point",min(1,p["x2"]+dx) if p.get("x2") is not None else None,min(1,p["y2"]+dy) if p.get("y2") is not None else None,p.get("show_motor",1),p.get("fov_angle",60)))
+        db.execute("INSERT INTO points(id,project_id,drawing_id,type_id,number,name,room,quantity,note,x,y,size,color,locked,product_id,product_snapshot,standard_cents,actual_cents,created_at,updated_at,shape,x2,y2,show_motor,fov_angle,curtain_style,curtain_length) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(new_id,p["project_id"],p["drawing_id"],p["type_id"],number,number if p["name"]==p["number"] else p["name"],p["room"],p["quantity"],p["note"],min(1,p["x"]+dx),min(1,p["y"]+dy),p["size"],p["color"],0,p["product_id"],p["product_snapshot"],p["standard_cents"],p["actual_cents"],now(),now(),p.get("shape") or "point",min(1,p["x2"]+dx) if p.get("x2") is not None else None,min(1,p["y2"]+dy) if p.get("y2") is not None else None,p.get("show_motor",1),p.get("fov_angle",60),p.get("curtain_style","single"),p.get("curtain_length",0)))
         db.execute("UPDATE points SET layer_id=?,line_width=? WHERE id=?",(p["layer_id"],p["line_width"],new_id))
         sync_line(db,new_id)
         return point_out(one(db,"SELECT * FROM points WHERE id=?",(new_id,)))
@@ -2139,6 +2515,100 @@ def save_quotation_version(pid: str,data: QuotationVersionIn):
         return quotation_v2_data(db,pid)
 
 
+@app.post("/api/projects/{pid}/quotation-v2/versions/{version_id}/restore")
+def restore_quotation_version(pid: str, version_id: str):
+    """Apply a saved quotation snapshot to the live quotation without changing history."""
+    with connect() as db:
+        quote = one(db, "SELECT * FROM quotes WHERE project_id=?", (pid,))
+        saved = db.execute(
+            "SELECT * FROM quotation_versions WHERE id=? AND quote_id=?",
+            (version_id, quote["id"]),
+        ).fetchone()
+        if not saved:
+            raise HTTPException(404, "报价版本不存在")
+        try:
+            snapshot = json.loads(saved["snapshot_json"])
+            settings = snapshot["settings"]
+            systems = snapshot["systems"]
+            fees = snapshot["construction_fees"]
+            if not isinstance(settings, dict) or not isinstance(systems, list) or not isinstance(fees, list):
+                raise ValueError("snapshot shape")
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            raise HTTPException(409, "该历史版本数据不完整，无法读取")
+
+        timestamp = now()
+        # Keep the live version counter monotonic; restoring an older snapshot must not
+        # make a later save reuse an existing version number.
+        saved_max = db.execute(
+            "SELECT COALESCE(MAX(version),0) FROM quotation_versions WHERE quote_id=?", (quote["id"],)
+        ).fetchone()[0]
+        quote_updates = {key: settings[key] for key in (
+            "project_name", "customer_name", "show_empty_categories", "decimal_places",
+            "tax_rate_basis", "discount_type", "discount_value", "template_id",
+            "company_info", "quote_date", "logo_path",
+        ) if key in settings}
+        quote_updates["updated_at"] = timestamp
+        quote_updates["version"] = max(int(quote.get("version", 1)), int(saved_max))
+        db.execute(
+            f"UPDATE quotes SET {','.join(f'{key}=?' for key in quote_updates)} WHERE id=?",
+            (*quote_updates.values(), quote["id"]),
+        )
+
+        # Apply per-system service settings and exact line-item snapshots.
+        for system in systems:
+            category_id = system.get("category_id") or system.get("id")
+            if not category_id:
+                continue
+            db.execute(
+                "UPDATE quotation_systems SET service_type=?,service_rate_basis=?,service_amount_cents=?,service_name=?,updated_at=? WHERE quote_id=? AND category_id=?",
+                (system.get("service_type", "none"), int(system.get("service_rate_basis") or 0),
+                 int(system.get("service_amount_cents") or 0), system.get("service_name", ""),
+                 timestamp, quote["id"], category_id),
+            )
+        db.execute("DELETE FROM quotation_items WHERE quote_id=?", (quote["id"],))
+        for system in systems:
+            category = system.get("category_id") or system.get("id")
+            if not category:
+                continue
+            for item in system.get("items", []):
+                db.execute(
+                    """INSERT INTO quotation_items(
+                        id,quote_id,source_type,source_key,product_id,system_category,product_name,product_code,
+                        image_path,brand,origin,quantity,source_quantity,quantity_override,unit_price_cents,
+                        standard_cents,unit,params,remark,sort_order,visible,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    # Historical product rows become self-contained quote rows so the
+                    # normal source synchronizer cannot overwrite their saved details.
+                    (uid(), quote["id"], "temp", uid(),
+                     item.get("product_id"), item.get("system_category") or category,
+                     item.get("product_name") or "未命名产品", item.get("product_code") or "", item.get("image_path"),
+                     item.get("brand") or "", item.get("origin") or "", int(item.get("quantity") or 1),
+                     int(item.get("source_quantity") or 0), int(bool(item.get("quantity_override"))),
+                     int(item.get("unit_price_cents") or 0), int(item.get("standard_cents") or 0),
+                     item.get("unit") or "个", item.get("params") or "", item.get("remark") or "",
+                     int(item.get("sort_order") or 0), int(bool(item.get("visible", True))), timestamp, timestamp),
+                )
+        for fee in fees:
+            fee_key = fee.get("id")
+            if fee_key:
+                db.execute(
+                    "INSERT INTO quotation_construction_fees(quote_id,fee_key,amount_cents,updated_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(quote_id,fee_key) DO UPDATE SET amount_cents=excluded.amount_cents,updated_at=excluded.updated_at",
+                    (quote["id"], fee_key, int(fee.get("amount_cents") or 0), timestamp),
+                )
+        return quotation_v2_data(db, pid)
+
+
+@app.delete("/api/projects/{pid}/quotation-v2/versions/{version_id}")
+def delete_quotation_version(pid: str, version_id: str):
+    with connect() as db:
+        quote = one(db, "SELECT id FROM quotes WHERE project_id=?", (pid,))
+        result = db.execute("DELETE FROM quotation_versions WHERE id=? AND quote_id=?", (version_id, quote["id"]))
+        if result.rowcount == 0:
+            raise HTTPException(404, "报价版本不存在")
+        return quotation_v2_data(db, pid)
+
+
 PROJECT_STATUS_DEFINITIONS = [
     ("resolved", "🟢", "已解决"),
     ("developing", "🟡", "开发中"),
@@ -2377,33 +2847,78 @@ def draw_device_symbol(draw, type_id, center, size, color, *, width=3, shadow=Tr
         for start,end in [((24,5),(24,14)),((24,34),(24,43)),((5,24),(14,24)),((34,24),(43,24)),((11,11),(17,17)),((31,31),(37,37)),((37,11),(31,17)),((17,31),(11,37))]: line(start,end)
 
 
-def draw_export(db,pid,did,show_name=True,show_number=True,layer_id=None):
+def draw_export(db,pid,did,show_name=True,show_number=True,layer_id=None,layer_ids=None):
     project=one(db,"SELECT * FROM projects WHERE id=?",(pid,)); drawing=one(db,"SELECT * FROM drawings WHERE id=? AND project_id=?",(did,pid))
-    if layer_id:
+    if layer_ids:
+        layer_ids=[item for item in layer_ids.split(",") if item]
+        if any(not db.execute("SELECT 1 FROM layers WHERE id=? AND floor_id=?",(item,drawing["floor_id"])).fetchone() for item in layer_ids): raise HTTPException(422,"图层不属于当前楼层")
+    elif layer_id:
         one(db,"SELECT id FROM layers WHERE id=? AND floor_id=?",(layer_id,drawing["floor_id"]))
     original=Image.open(UPLOADS/drawing["background_path"]).convert("RGB")
     ow,oh=original.size
-    design_plot=(690,55,1170,970)
-    scale=max(1.0,ow/design_plot[2],oh/design_plot[3])
+    fixed=drawing.get("canvas_mode")=="fixed"
+    design_plot=(690,211,1170,658) if fixed else (690,55,1170,970)
+    scale=1.0 if fixed else max(1.0,ow/design_plot[2],oh/design_plot[3])
     W,H=round(1920*scale),round(1080*scale); k=W/1920
     canvas=Image.new("RGB",(W,H),"white"); draw=ImageDraw.Draw(canvas)
     plot_x,plot_y,plot_w,plot_h=[round(v*k) for v in design_plot]
-    image_scale=min(plot_w/ow,plot_h/oh); pw,ph=round(ow*image_scale),round(oh*image_scale)
-    left=plot_x+(plot_w-pw)//2; top=plot_y+(plot_h-ph)//2
-    canvas.paste(original.resize((pw,ph),Image.Resampling.LANCZOS),(left,top))
+    if fixed:
+        cw,ch=drawing.get("canvas_width") or 1600,drawing.get("canvas_height") or 900
+        canvas_scale=min(plot_w/cw,plot_h/ch)
+        frame_x,frame_y=drawing.get("image_x",0),drawing.get("image_y",0)
+        frame_w,frame_h=drawing.get("image_width",cw),drawing.get("image_height",ch)
+        image_scale=canvas_scale*frame_w/ow
+        pw,ph=round(frame_w*canvas_scale),round(frame_h*canvas_scale)
+        left=plot_x+round(frame_x*canvas_scale); top=plot_y+round(frame_y*canvas_scale)
+        image=original.resize((max(1,pw),max(1,ph)),Image.Resampling.LANCZOS)
+        angle=float(drawing.get("image_rotation") or 0)
+        if angle: image=image.rotate(-angle,expand=True,resample=Image.Resampling.BICUBIC)
+        canvas.paste(image,(left+(pw-image.width)//2,top+(ph-image.height)//2))
+        def point_xy(x,y):
+            px=x*frame_w; py=y*frame_h; dx=px-frame_w/2; dy=py-frame_h/2; rad=math.radians(angle)
+            return (plot_x+round((frame_x+frame_w/2+dx*math.cos(rad)-dy*math.sin(rad))*canvas_scale),plot_y+round((frame_y+frame_h/2+dx*math.sin(rad)+dy*math.cos(rad))*canvas_scale))
+    else:
+        image_scale=min(plot_w/ow,plot_h/oh); pw,ph=round(ow*image_scale),round(oh*image_scale)
+        left=plot_x+(plot_w-pw)//2; top=plot_y+(plot_h-ph)//2
+        canvas.paste(original.resize((pw,ph),Image.Resampling.LANCZOS),(left,top))
+        def point_xy(x,y): return left+round(x*pw),top+round(y*ph)
     title_font=font(max(28,round(48*k))); sub_font=font(max(16,round(23*k))); label_font=font(max(14,round(18*k)))
     title=drawing.get("name") or Path(drawing["filename"]).stem
     draw.text((75*k,60*k),title,font=title_font,fill="#626674")
     draw.text((78*k,130*k),project["name"],font=sub_font,fill="#8b8f99")
     if project.get("address"): draw.text((78*k,165*k),project["address"][:32],font=label_font,fill="#9a9da6")
-    if layer_id:
+    if layer_ids is not None:
+        if layer_ids:
+            marks=",".join("?" for _ in layer_ids)
+            points=rows(db.execute(f"SELECT * FROM points WHERE drawing_id=? AND layer_id IN ({marks}) ORDER BY created_at",(did,*layer_ids)))
+        else: points=[]
+    elif layer_id:
         points=rows(db.execute("SELECT * FROM points WHERE drawing_id=? AND layer_id=? ORDER BY created_at",(did,layer_id)))
     else:
         points=rows(db.execute("SELECT p.* FROM points p JOIN layers l ON l.id=p.layer_id WHERE p.drawing_id=? AND l.visible=1 ORDER BY p.created_at",(did,)))
+    # Area rectangles remain individually editable in storage, while exports draw their
+    # geometric union once so overlapping fills and borders do not darken or double up.
+    area_groups={}
+    for point in points:
+        if point.get("shape")!="area": continue
+        area_groups.setdefault((point["type_id"],point["color"]),[]).append(point)
+    for (area_type,area_color),items in area_groups.items():
+        mask=Image.new("L",canvas.size,0); md=ImageDraw.Draw(mask)
+        for point in items:
+            ax,ay=point_xy(point["x"],point["y"]); bx,by=point_xy(point.get("x2") if point.get("x2") is not None else point["x"],point.get("y2") if point.get("y2") is not None else point["y"])
+            md.rectangle((min(ax,bx),min(ay,by),max(ax,bx),max(ay,by)),fill=255)
+        fill=Image.new("RGBA",canvas.size,area_color+("24" if area_type=="non_smart_area" else "35")); canvas.paste(fill,(0,0),mask)
+        if area_type=="non_smart_area":
+            hatch=Image.new("RGBA",canvas.size,(0,0,0,0)); hd=ImageDraw.Draw(hatch); step=max(16,round(18*k))
+            for offset in range(-canvas.height,canvas.width+canvas.height,step): hd.line((offset,0,offset-canvas.height,canvas.height),fill=area_color+"35",width=max(1,round(k)))
+            canvas.paste(hatch,(0,0),ImageChops.multiply(mask,hatch.getchannel("A")))
+        edge=ImageChops.subtract(mask,mask.filter(ImageFilter.MinFilter(3)))
+        outline=Image.new("RGBA",canvas.size,area_color+"ff"); canvas.paste(outline,(0,0),edge)
+    draw=ImageDraw.Draw(canvas)
     used=set()
     for p in points:
-        x=left+round(p["x"]*pw); y=top+round(p["y"]*ph); radius=max(round(12*k),round(p["size"]*image_scale/2)); color=p["color"]
-        shape=p.get("shape") or "point"; x2=left+round((p.get("x2") if p.get("x2") is not None else p["x"])*pw); y2=top+round((p.get("y2") if p.get("y2") is not None else p["y"])*ph)
+        x,y=point_xy(p["x"],p["y"]); radius=max(round(12*k),round(p["size"]*image_scale/2)); color=p["color"]
+        shape=p.get("shape") or "point"; x2,y2=point_xy(p.get("x2") if p.get("x2") is not None else p["x"],p.get("y2") if p.get("y2") is not None else p["y"])
         strength=int(project.get("shadow_strength") or 0)
         if strength and shape in {"point","sector"}:
             spread=max(3,round(5*k)); side=2*(radius+spread)
@@ -2420,19 +2935,49 @@ def draw_export(db,pid,did,show_name=True,show_number=True,layer_id=None):
             canvas.paste(overlay,(0,0),overlay); draw=ImageDraw.Draw(canvas)
             draw_device_symbol(draw,"camera",(x,y),radius*2,color,width=max(2,round(2*k)),shadow=bool(strength))
         elif shape=="line":
-            line_width=max(1,round(float(p.get("line_width") or 3)*k)); draw.line((x,y,x2,y2),fill=color,width=line_width)
+            line_width=max(round(4*k),round(float(p.get("line_width") or 3)*k))
             dx,dy=x2-x,y2-y; length=max(1,(dx*dx+dy*dy)**.5); ux,uy=dx/length,dy/length; px,py=-uy,ux
-            arrow=max(round(13*k),line_width*2); half=arrow*.48
-            if p.get("show_motor",1):
-                motor=max(round(14*k),line_width*2); draw.rectangle((x-motor/2,y-motor/2,x+motor/2,y+motor/2),fill=color)
-            draw.polygon(((x2,y2),(x2-ux*arrow+px*half,y2-uy*arrow+py*half),(x2-ux*arrow-px*half,y2-uy*arrow-py*half)),fill=color)
+            arrow=max(round(14*k),line_width*2); half=arrow*.42
+            style=p.get("curtain_style") or "single"; split=style in {"double","double_layer_double"}
+            mid_x,mid_y=(x+x2)/2,(y+y2)/2; gap=min(round(8*k),length*.08)
+            left_tip=(mid_x-ux*gap,mid_y-uy*gap); right_tip=(mid_x+ux*gap,mid_y+uy*gap)
+            offset=max(round(20*k),line_width*3); amplitude=max(2,round(8*k))
+            def arrow_line(start,end):
+                sx,sy=start; ex,ey=end; vx,vy=ex-sx,ey-sy; seg_len=max(1,math.hypot(vx,vy)); avx,avy=vx/seg_len,vy/seg_len
+                draw.line((sx,sy,ex,ey),fill=color,width=line_width)
+                draw.polygon(((ex,ey),(ex-avx*arrow-avy*half,ey-avy*arrow+avx*half),(ex-avx*arrow+avy*half,ey-avy*arrow-avx*half)),fill=color)
+            def wave_line(start,end):
+                sx,sy=start; ex,ey=end; vx,vy=ex-sx,ey-sy; seg_len=max(1,math.hypot(vx,vy)); cycles=max(1,round(seg_len/max(1,40*k))); samples=max(24,round(seg_len/max(1,3*k))); wave=[]
+                for step in range(samples+1):
+                    t=step/samples; displacement=amplitude*math.sin(math.pi*t)*math.sin(2*math.pi*cycles*t)
+                    wave.append((sx+vx*t+px*displacement,sy+vy*t+py*displacement))
+                draw.line(wave,fill=color,width=line_width,joint="curve")
+                arrow_line(wave[-2],wave[-1])
+            upper_start=(x+px*offset,y+py*offset); upper_end=(x2+px*offset,y2+py*offset)
+            lower_start=(x-px*offset,y-py*offset); lower_end=(x2-px*offset,y2-py*offset)
+            upper_left_tip=(left_tip[0]+px*offset,left_tip[1]+py*offset); upper_right_tip=(right_tip[0]+px*offset,right_tip[1]+py*offset)
+            lower_left_tip=(left_tip[0]-px*offset,left_tip[1]-py*offset); lower_right_tip=(right_tip[0]-px*offset,right_tip[1]-py*offset)
+            has_motor=bool(p.get("show_motor",1)); motor_scale=max(.6,float(p.get("size") or 20)/20); motor_w=max(round(28*k*motor_scale),line_width*2); motor_h=max(round(50*k*motor_scale),line_width*4)
+            def track_start(normal_offset=0):
+                depth=0
+                if has_motor and abs(normal_offset)<motor_h/2:
+                    depth=(motor_w/2)*math.sqrt(1-(normal_offset/(motor_h/2))**2)
+                return (x+ux*depth+px*normal_offset,y+uy*depth+py*normal_offset)
+            upper_start=track_start(offset); lower_start=track_start(-offset)
+            if style=="single": arrow_line(track_start(),(x2,y2))
+            elif style=="double": arrow_line(track_start(),left_tip); arrow_line((x2,y2),right_tip)
+            elif style=="double_layer_single": wave_line(upper_start,upper_end); arrow_line(lower_start,lower_end)
+            elif style=="double_layer_double":
+                wave_line(upper_start,upper_left_tip); wave_line(upper_end,upper_right_tip)
+                arrow_line(lower_start,lower_left_tip); arrow_line(lower_end,lower_right_tip)
+            else: arrow_line(track_start(),(x2,y2))
+            if has_motor:
+                side=math.ceil(math.hypot(motor_w,motor_h))+4; motor_layer=Image.new("RGBA",(side,side),(0,0,0,0)); motor_draw=ImageDraw.Draw(motor_layer)
+                motor_draw.rounded_rectangle((side/2-motor_w/2,side/2-motor_h/2,side/2+motor_w/2,side/2+motor_h/2),radius=max(1,round(2*k)),fill="white",outline=color,width=max(1,round(2*k)))
+                motor_layer=motor_layer.rotate(-math.degrees(math.atan2(dy,dx)),resample=Image.Resampling.BICUBIC)
+                canvas.paste(motor_layer,(round(x-side/2),round(y-side/2)),motor_layer); draw=ImageDraw.Draw(canvas)
         elif shape=="area":
-            overlay=Image.new("RGBA",canvas.size,(0,0,0,0)); od=ImageDraw.Draw(overlay); bounds=(min(x,x2),min(y,y2),max(x,x2),max(y,y2)); od.rectangle(bounds,fill=color+("24" if p["type_id"]=="non_smart_area" else "35"),outline=color,width=max(4,round(4*k)))
-            if p["type_id"]=="non_smart_area":
-                step=max(16,round(18*k)); left_bound,top_bound,right_bound,bottom_bound=bounds
-                for offset in range(-int(bottom_bound-top_bound),int(right_bound-left_bound)+step,step):
-                    sx=max(left_bound,left_bound+offset); sy=max(top_bound,top_bound-offset); ex=min(right_bound,left_bound+offset+(bottom_bound-top_bound)); ey=min(bottom_bound,top_bound+(right_bound-left_bound-offset)); od.line((sx,sy,ex,ey),fill=color+"35",width=max(1,round(k)))
-            canvas.paste(overlay,(0,0),overlay); draw=ImageDraw.Draw(canvas)
+            pass
         else:
             draw_device_symbol(draw,p["type_id"],(x,y),radius*2,color,width=max(2,round(2*k)),shadow=bool(strength))
         label=("非智能区域"+(f" · {p['number']}" if show_number else "")) if p["type_id"]=="non_smart_area" else " · ".join(v for v in (p["number"] if show_number else "",p["name"] if show_name and p["name"]!=p["number"] else "") if v)
@@ -2451,8 +2996,8 @@ def draw_export(db,pid,did,show_name=True,show_number=True,layer_id=None):
     legend_positions=json.loads(drawing.get("legend_items") or "{}")
     for index,t in enumerate(legend_types):
         item_position=legend_positions.get(t[0]) or [float(drawing.get("legend_x") or .025),float(drawing.get("legend_y") or .025)+index*52/max(1,ph)]
-        symbol_x=left+round(float(item_position[0])*pw)+round(22*k)
-        symbol_y=top+round(float(item_position[1])*ph)+round(16*k)
+        symbol_x,symbol_y=point_xy(float(item_position[0]),float(item_position[1]))
+        symbol_x+=round(22*k); symbol_y+=round(16*k)
         draw_device_symbol(draw,"other" if t[0].startswith("other::") else t[0],(symbol_x,symbol_y),round(28*k),t[3],width=max(2,round(2*k)))
         draw.text((symbol_x+round(28*k),symbol_y-round(10*k)),t[1],font=label_font,fill="#3f4756")
     stamp=f"导出时间：{now()[:19].replace('T',' ')}"; draw.text((78*k,H-64*k),stamp,font=label_font,fill="#8c9099")
@@ -2460,9 +3005,9 @@ def draw_export(db,pid,did,show_name=True,show_number=True,layer_id=None):
 
 
 @app.get("/api/projects/{pid}/drawings/{did}/export.{format}")
-def export_drawing(pid: str,did: str,format: str,show_name: bool=True,show_number: bool=True,layer_id: Optional[str]=None):
+def export_drawing(pid: str,did: str,format: str,show_name: bool=True,show_number: bool=True,layer_id: Optional[str]=None,layer_ids: Optional[str]=None):
     if format not in ("png","pdf"): raise HTTPException(422,"格式错误")
-    with connect() as db: image,project=draw_export(db,pid,did,show_name,show_number,layer_id)
+    with connect() as db: image,project=draw_export(db,pid,did,show_name,show_number,layer_id,layer_ids)
     path=EXPORTS/f'{safe_name(project["name"])}_点位图_{datetime.now():%Y%m%d_%H%M%S}.{format}'
     if format=="png": image.save(path)
     else: image.save(path,"PDF",resolution=200)

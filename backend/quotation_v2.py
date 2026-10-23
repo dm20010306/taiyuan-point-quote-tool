@@ -12,11 +12,12 @@ SYSTEM_CATEGORIES = (
     {"id": "curtain", "order": 4, "name_zh": "遮阳系统", "name_en": "Shading System", "icon": "curtain"},
     {"id": "hvac", "order": 5, "name_zh": "暖通系统", "name_en": "HVAC System", "icon": "air"},
     {"id": "cable", "order": 6, "name_zh": "线材", "name_en": "Cabling", "icon": "cable"},
-    {"id": "intercom", "order": 7, "name_zh": "可视对讲系统", "name_en": "Visual Intercom System", "icon": "intercom"},
-    {"id": "network", "order": 8, "name_zh": "网络系统", "name_en": "Network System", "icon": "wifi"},
-    {"id": "surveillance", "order": 9, "name_zh": "监控系统", "name_en": "Surveillance System", "icon": "camera"},
-    {"id": "music", "order": 10, "name_zh": "背景音乐", "name_en": "Background Music", "icon": "headphones"},
-    {"id": "lighting-control", "order": 11, "name_zh": "灯控", "name_en": "Lighting Control", "icon": "light"},
+    {"id": "ubnt-network-monitor", "order": 7, "name_zh": "UBNT网络监控系统", "name_en": "UBNT Network & Surveillance", "icon": "wifi"},
+    {"id": "intercom", "order": 8, "name_zh": "可视对讲系统", "name_en": "Visual Intercom System", "icon": "intercom"},
+    {"id": "network", "order": 9, "name_zh": "网络系统", "name_en": "Network System", "icon": "wifi"},
+    {"id": "surveillance", "order": 10, "name_zh": "监控系统", "name_en": "Surveillance System", "icon": "camera"},
+    {"id": "music", "order": 11, "name_zh": "背景音乐", "name_en": "Background Music", "icon": "headphones"},
+    {"id": "lighting-control", "order": 12, "name_zh": "灯控", "name_en": "Lighting Control", "icon": "light"},
 )
 UNCATEGORIZED = {"id": "uncategorized", "order": 99, "name_zh": "未分类", "name_en": "Uncategorized", "icon": "other"}
 SYSTEM_BY_ID = {item["id"]: item for item in (*SYSTEM_CATEGORIES, UNCATEGORIZED)}

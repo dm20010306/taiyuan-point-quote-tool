@@ -216,6 +216,8 @@ class KnowledgeRepository:
             records = [dict(row) for row in db.execute(f'SELECT * FROM "{table}" WHERE {foreign_key}=? ORDER BY "{order}"', (project_id,))]
             snapshot["tables"][table] = records
         snapshot["tables"]["floors"] = [dict(row) for row in db.execute("SELECT * FROM floors WHERE project_id=? ORDER BY sort_order,id",(project_id,))]
+        # Keep the user-managed project folder list recoverable with project notes.
+        snapshot["tables"]["project_folders"] = [dict(row) for row in db.execute("SELECT * FROM project_folders ORDER BY sort_order,name")]
         snapshot["tables"]["layers"] = [dict(row) for row in db.execute("SELECT l.* FROM layers l JOIN floors f ON f.id=l.floor_id WHERE f.project_id=? ORDER BY l.sort_order,l.id",(project_id,))]
         quote_id = quote[0] if quote else None
         for table, order in QUOTE_TABLES:
@@ -277,6 +279,12 @@ class KnowledgeRepository:
         project_id = project_rows[0]["id"]
         db.execute("DELETE FROM projects WHERE id=?", (project_id,))
         tables=snapshot["tables"]
+        for folder in tables.get("project_folders", []):
+            columns = list(folder)
+            db.execute(
+                f"INSERT OR IGNORE INTO project_folders({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+                [folder[column] for column in columns],
+            )
         floors=tables.get("floors") or []
         layers=tables.get("layers") or []
         if not floors:

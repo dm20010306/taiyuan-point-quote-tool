@@ -88,6 +88,34 @@ def test_v32_export_only_selected_layer():
     assert client.get(f"/api/projects/{pid}/drawings/{drawing['id']}/export.png?layer_id=missing").status_code==404
 
 
+def test_rq021_crop_is_reversible_and_can_be_adjusted_repeatedly():
+    project=request("POST","/api/projects",json={"name":"reversible crop regression"})
+    pid=project["id"]; project=request("GET",f"/api/projects/{pid}"); floor=project["floors"][0]; layer=project["layers"][0]
+    drawing=project["drawings"][0]
+    image=Image.new("RGB",(400,300),"white")
+    buffer=io.BytesIO(); image.save(buffer,"PNG")
+    uploaded=request("POST",f"/api/projects/{pid}/drawings",files={"file":("original.png",buffer.getvalue(),"image/png")},data={"page":"1","floor_id":floor["id"],"drawing_id":drawing["id"]})
+    original=uploaded["background_path"]
+    point=request("POST",f"/api/projects/{pid}/points?drawing_id={drawing['id']}",json={"type_id":"switch","layer_id":layer["id"],"x":.4,"y":.4})
+    cropped=request("POST",f"/api/projects/{pid}/drawings/{drawing['id']}/crop",json={"left":.2,"top":.1,"right":.8,"bottom":.9})
+    current=next(item for item in cropped["drawings"] if item["id"]==drawing["id"])
+    current_point=next(item for item in cropped["points"] if item["id"]==point["id"])
+    assert current["crop_source_path"]==original
+    assert (current["width"],current["height"])==(240,240)
+    assert abs(current_point["x"]-1/3)<1e-9 and abs(current_point["y"]-.375)<1e-9
+    assert client.get(f"/api/files/{original}").status_code==200
+    recropped=request("POST",f"/api/projects/{pid}/drawings/{drawing['id']}/crop",json={"left":.1,"top":.1,"right":.9,"bottom":.9})
+    current=next(item for item in recropped["drawings"] if item["id"]==drawing["id"])
+    current_point=next(item for item in recropped["points"] if item["id"]==point["id"])
+    assert current["crop_source_path"]==original and (current["width"],current["height"])==(320,240)
+    assert abs(current_point["x"]-.375)<1e-9 and abs(current_point["y"]-.375)<1e-9
+    restored=request("POST",f"/api/projects/{pid}/drawings/{drawing['id']}/crop",json={"left":0,"top":0,"right":1,"bottom":1})
+    current=next(item for item in restored["drawings"] if item["id"]==drawing["id"])
+    current_point=next(item for item in restored["points"] if item["id"]==point["id"])
+    assert current["crop_source_path"]==original and (current["width"],current["height"])==(400,300)
+    assert abs(current_point["x"]-.4)<1e-9 and abs(current_point["y"]-.4)<1e-9
+
+
 def test_rq017a_request_ids_structured_errors_and_scan_metrics():
     success = client.get("/api/version", headers={"X-Request-ID": "REQ-success-check"})
     assert success.status_code == 200
@@ -588,7 +616,6 @@ def test_rq003c_curtain_direction_motor_visibility_and_geometry_lifecycle():
     visible_export=client.get(f"/api/projects/{project['id']}/drawings/{drawing['id']}/export.png?show_name=false&show_number=false")
     restored=request("POST","/api/points/restore",json={**shown,"show_motor":False})
     assert restored["show_motor"]==0
-
     exported=client.get(f"/api/projects/{project['id']}/drawings/{drawing['id']}/export.png?show_name=false&show_number=false")
     assert visible_export.status_code==200 and exported.status_code==200
     assert visible_export.content!=exported.content and Image.open(io.BytesIO(exported.content)).width>=800

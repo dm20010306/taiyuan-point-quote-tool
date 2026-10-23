@@ -79,6 +79,16 @@ fi
 
 mkdir -p "$runtime_frontend"
 
+# Finder/Terminal-launched .command files may not inherit Homebrew's PATH.
+# Add the standard install locations before checking Node so the app can start
+# from a double-click without requiring a shell profile to have been loaded.
+for node_bin in /opt/homebrew/bin /usr/local/bin; do
+  if [[ -x "$node_bin/node" && -x "$node_bin/npm" ]]; then
+    export PATH="$node_bin:$PATH"
+    break
+  fi
+done
+
 if ! command -v npm >/dev/null 2>&1; then
   echo "未找到 Node.js/npm，请先安装 Node.js 20 或更高版本。"
   read "?按回车键关闭窗口..."
