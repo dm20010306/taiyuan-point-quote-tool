@@ -17,6 +17,7 @@ export default function PlanDeviceIcon({type,size=18,className='device-icon-svg'
     case 'camera': symbol=<><path d="M6 16h29l8 8-8 8H6zM13 32v6h19M23 38v5"/><circle cx="34" cy="24" r="4"/><path d="M9 21h17"/></>;break;
     case 'ceiling_ap': symbol=<><path d="M8 22a23 23 0 0 1 32 0M14 28a15 15 0 0 1 20 0M20 34a6 6 0 0 1 8 0"/><circle cx="24" cy="39" r="2.2" fill="currentColor" stroke="none"/></>;break;
     case 'wall_ap': symbol=<><path d="M8 17a23 23 0 0 1 32 0M14 24a14 14 0 0 1 20 0M20 31a6 6 0 0 1 8 0"/><circle cx="24" cy="37" r="2.2" fill="currentColor" stroke="none"/></>;break;
+    case 'outdoor_ap': symbol=<><rect x="15" y="19" width="18" height="23" rx="3"/><path d="M24 19V10M17 13a10 10 0 0 1 14 0M20 16a6 6 0 0 1 8 0"/><circle cx="24" cy="33" r="2" fill="currentColor" stroke="none"/></>;break;
     case 'network': symbol=<><path d="M8 20a23 23 0 0 1 32 0M14 27a14 14 0 0 1 20 0M20 34a6 6 0 0 1 8 0"/><circle cx="24" cy="40" r="2.2" fill="currentColor" stroke="none"/></>;break;
     case 'water': symbol=<><path d="M24 5C17 17 12 23 12 30a12 12 0 0 0 24 0c0-7-5-13-12-25Z"/><path d="M19 31c1 3 3 5 7 5"/></>;break;
     case 'av': symbol=<><path d="M9 13h12l11-7v36l-11-7H9zM37 17c4 4 4 10 0 14M40 12c7 7 7 17 0 24"/></>;break;

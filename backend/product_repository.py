@@ -43,7 +43,7 @@ SYSTEM_FOLDER_BY_ID.update({
 DEVICE_TYPE_NAMES = {
     "switch":"智能开关", "curtain":"窗帘", "sensor":"人体传感器", "water":"水浸传感器",
     "thermostat":"温控器", "light":"调光", "lock":"智能门禁", "camera":"摄像头",
-    "ceiling_ap":"吸顶 AP", "wall_ap":"墙面 AP", "network":"网络设备（历史兼容）",
+    "ceiling_ap":"吸顶 AP", "wall_ap":"墙面 AP", "outdoor_ap":"室外 AP", "network":"网络设备（历史兼容）",
     "av":"影音设备", "system":"智能系统", "other":"其他设备",
     "cloud_gateway":"云网关主机", "network_switch":"交换机", "poe_switch":"POE交换机", "cable":"线材",
 }
@@ -51,11 +51,11 @@ LEGACY_TYPE_BY_CATEGORY = {
     "智能开关":"switch", "窗帘":"curtain", "人体传感器":"sensor", "水浸传感器":"water",
     "温控器":"thermostat", "调光":"light", "灯光":"light", "灯带":"light", "灯光控制模块":"light",
     "智能门禁":"lock", "门锁":"lock", "摄像头":"camera", "吸顶 AP":"ceiling_ap",
-    "吸顶AP":"ceiling_ap", "墙面 AP":"wall_ap", "墙面AP":"wall_ap", "网络设备":"network",
+    "吸顶AP":"ceiling_ap", "墙面 AP":"wall_ap", "墙面AP":"wall_ap", "室外 AP":"outdoor_ap", "室外AP":"outdoor_ap", "网络设备":"network",
     "影音设备":"av", "智能系统":"system", "智能电箱模块":"system", "综合布线":"system", "其他设备":"other",
 }
 MAJOR_BY_DEVICE_TYPE = {
-    "av":"影音", "light":"灯光", "network":"网络", "ceiling_ap":"网络", "wall_ap":"网络",
+    "av":"影音", "light":"灯光", "network":"网络", "ceiling_ap":"网络", "wall_ap":"网络", "outdoor_ap":"网络",
     "switch":"智能", "curtain":"智能", "sensor":"智能", "water":"智能", "thermostat":"智能",
     "lock":"智能", "camera":"智能", "system":"智能", "other":"智能",
 }
@@ -146,7 +146,7 @@ def note_to_product(path: Path) -> dict | None:
     raw_category = str(data.get("分类") or "智能").strip()
     category = canonical_product_category(raw_category)
     device_type = canonical_device_type(data.get("点位类型") or data.get("设备类型") or raw_category, category)
-    system_category = "network" if device_type in {"ceiling_ap", "wall_ap"} else canonical_system_category(data.get("所属系统"))
+    system_category = "network" if device_type in {"ceiling_ap", "wall_ap", "outdoor_ap"} else canonical_system_category(data.get("所属系统"))
     stored_brand_id = str(data.get("品牌ID") or "").strip()
     if not re.fullmatch(r"[a-f0-9]{32}", stored_brand_id):
         stored_brand_id = brand_id(brand)
@@ -408,7 +408,7 @@ class ObsidianProductRepository:
         previous, body = read_frontmatter(existing_path) if existing_path else ({}, "")
         product["category"] = canonical_product_category(product.get("category", ""))
         product["device_type"] = canonical_device_type(product.get("device_type", ""), product["category"])
-        product["system_category"] = "network" if product["device_type"] in {"ceiling_ap", "wall_ap"} else canonical_system_category(product.get("system_category"))
+        product["system_category"] = "network" if product["device_type"] in {"ceiling_ap", "wall_ap", "outdoor_ap"} else canonical_system_category(product.get("system_category"))
         target_dir = PRODUCT_DIR / SYSTEM_FOLDER_BY_ID[product["system_category"]]
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / ((existing_path.name if existing_path else f"{safe_filename(product['name'])}-{pid[:8]}.md"))

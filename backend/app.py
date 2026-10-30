@@ -75,6 +75,7 @@ TYPES = [
     ("lock", "智能门禁", "门禁", "#555e75"),
     ("camera", "摄像头", "摄像头", "#dd6b65"),
     ("ceiling_ap", "吸顶 AP", "吸顶AP", "#2389b9"), ("wall_ap", "墙面 AP", "墙面AP", "#3971b7"),
+    ("outdoor_ap", "室外 AP", "室外AP", "#307b9f"),
     ("water", "水浸传感器", "水浸", "#008fb3"), ("av", "影音设备", "影音", "#ad6c9e"), ("system", "智能系统", "系统", "#293f71"),
     ("other", "其他设备", "其他", "#808080"),
     ("network", "网络设备（历史兼容）", "网络", "#2c9bce"),
@@ -2776,7 +2777,7 @@ def draw_device_symbol(draw, type_id, center, size, color, *, width=3, shadow=Tr
     x, y = center
     r = size / 2
     w = max(1, round(width))
-    square = type_id in {"switch", "wall_ap"}
+    square = type_id in {"switch", "wall_ap", "outdoor_ap"}
     box = (x-r, y-r, x+r, y+r)
     shadow_box = (x-r, y-r+max(1, w//2), x+r, y+r+max(1, w//2))
     if square:
@@ -2823,12 +2824,15 @@ def draw_device_symbol(draw, type_id, center, size, color, *, width=3, shadow=Tr
         line((6,16),(35,16),(43,24),(35,32),(6,32),(6,16))
         line((9,21),(26,21)); ellipse(34,24,4)
         line((13,32),(13,38),(32,38)); line((23,38),(23,43))
-    elif type_id in {"ceiling_ap", "wall_ap", "network"}:
-        rise = 0 if type_id == "wall_ap" else 4 if type_id == "network" else 5
-        arc(8,5+rise,40,37+rise,205,335)
-        arc(14,12+rise,34,32+rise,205,335)
-        arc(20,20+rise,28,28+rise,205,335)
-        ellipse(24,37+rise//2,2,fill=color)
+    elif type_id in {"ceiling_ap", "wall_ap", "outdoor_ap", "network"}:
+        rise = 0 if type_id == "wall_ap" else 4 if type_id == "network" else 5 if type_id == "ceiling_ap" else 2
+        if type_id == "outdoor_ap":
+            rect(14,18,34,39,3); line((24,18),(24,9)); arc(14,4,34,22,205,335); ellipse(24,30,2,fill=color)
+        else:
+            arc(8,5+rise,40,37+rise,205,335)
+            arc(14,12+rise,34,32+rise,205,335)
+            arc(20,20+rise,28,28+rise,205,335)
+            ellipse(24,37+rise//2,2,fill=color)
     elif type_id == "water":
         line((24,5),(13,23),(12,30),(15,37),(20,41),(28,41),(34,37),(36,30),(35,23),(24,5))
         line((19,31),(21,35),(26,36))
@@ -2980,7 +2984,11 @@ def draw_export(db,pid,did,show_name=True,show_number=True,layer_id=None,layer_i
             pass
         else:
             draw_device_symbol(draw,p["type_id"],(x,y),radius*2,color,width=max(2,round(2*k)),shadow=bool(strength))
-        label=("非智能区域"+(f" · {p['number']}" if show_number else "")) if p["type_id"]=="non_smart_area" else " · ".join(v for v in (p["number"] if show_number else "",p["name"] if show_name and p["name"]!=p["number"] else "") if v)
+        label_parts=[]
+        display_name=(TYPE_MAP.get(p["type_id"], ("", "非智能区域"))[1] if p["type_id"]=="non_smart_area" and p["name"]==p["number"] else p["name"] if p["name"] and p["name"]!=p["number"] else TYPE_MAP.get(p["type_id"], ("", ""))[1])
+        if show_name and display_name: label_parts.append(display_name)
+        if show_number and p["number"]: label_parts.append(re.search(r"\d+$", str(p["number"])).group(0) if re.search(r"\d+$", str(p["number"])) else str(p["number"]))
+        label=" · ".join(dict.fromkeys(label_parts))
         if label:
             bbox=draw.textbbox((0,0),label,font=label_font); tw=bbox[2]-bbox[0]; tx=min(max(left,x+radius+7*k),left+pw-tw-8*k); ty=min(max(top,y-radius-5*k),top+ph-(bbox[3]-bbox[1])-5*k)
             draw.rounded_rectangle((tx-3*k,ty-2*k,tx+tw+3*k,ty+bbox[3]-bbox[1]+3*k),radius=max(3,round(3*k)),fill="white")
