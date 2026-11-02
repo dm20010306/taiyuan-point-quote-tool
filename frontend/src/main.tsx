@@ -20,7 +20,7 @@ type Point={id:string,project_id:string,drawing_id:string,layer_id:string,type_i
 type Brand={id:string,name:string,english_name:string,aliases:string[],logo_url:string|null,enabled:boolean,note:string};
 type Product={id:string,brand_id:string,brand_name:string,brand_logo_url:string|null,name:string,series:string,model:string,category:string,device_type:string,system_category:string,standard_price:string,cost_price:string|null,margin_percent:number|null,unit:string,origin:string,params:string,description:string,image_path:string|null,image_url:string|null,enabled:number,note_path:string};
 type KnowledgeSyncStatus={brand_notes:number,project_notes:number,conflicts:{id:string,entity_type:string,entity_id:string}[],sync_status?:'synced'|'saving'|'waiting_sync'|'sync_failed',last_sync_at?:string,pending_count?:number,pending_items?:{entity_type:string,entity_id:string}[],failure_count?:number,recent_error?:string,error_type?:string};
-const FRONTEND_VERSION='3.5-dev';
+const FRONTEND_VERSION='3.5-beta';
 type ShortcutMap=Record<string,string>;
 const SHORTCUT_STORAGE_KEY='pointquote.shortcuts.v1';
 const DEFAULT_SHORTCUTS:ShortcutMap={select:'A',switch:'Q',curtain:'W',sensor:'S',thermostat:'D',light:'R',non_smart_area:'T',lock:'F',camera:'E',ceiling_ap:'G',wall_ap:'H',outdoor_ap:'O',water:'J',av:'K',system:'L',other:'M',delete:'Delete',undo:'Mod+Z',redo:'Mod+Shift+Z'};
@@ -369,7 +369,7 @@ function HelpPage({fail}:{fail:(e:unknown)=>void}){
  const requirements=(sourceFilter==='issues'?[]:statusData?.requirements||[]).filter(item=>statusFilter==='all'||item.status.key===statusFilter);
  const issues=(sourceFilter==='requirements'?[]:statusData?.issues||[]).filter(item=>statusFilter==='all'||item.status.key===statusFilter);
  return <main className="page-shell help-page">
-  <div className="page-heading"><div><div className="eyebrow">HELP & FEEDBACK</div><h1>帮助与反馈</h1><p>智能图纸点位与报价工具 v3.5-dev</p></div></div>
+  <div className="page-heading"><div><div className="eyebrow">HELP & FEEDBACK</div><h1>帮助与反馈</h1><p>智能图纸点位与报价工具 v3.5-beta</p></div></div>
   <nav className="help-tabs" aria-label="帮助中心栏目">
    <button className={tab==='guide'?'active':''} onClick={()=>setTab('guide')}>使用帮助</button>
    <button className={tab==='status'?'active':''} onClick={()=>setTab('status')}>需求与问题</button>

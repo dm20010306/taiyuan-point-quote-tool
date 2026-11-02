@@ -18,8 +18,10 @@ if os.environ.get("POINT_QUOTE_ALLOW_APP_TESTS") != "1":
     pytest.skip("run in an isolated tool copy with POINT_QUOTE_ALLOW_APP_TESTS=1", allow_module_level=True)
 
 TEST_ROOT = tempfile.mkdtemp(prefix="point-quote-test-")
-os.environ["POINT_QUOTE_DATA_DIR"] = os.path.join(TEST_ROOT, "data")
+os.environ["POINT_QUOTE_USER_DATA_DIR"] = os.path.join(TEST_ROOT, "data")
 os.environ["POINT_QUOTE_VAULT_ROOT"] = TEST_ROOT
+for relative in ("01_产品库/_品牌", "06_客户档案/智能图纸与报价", "09_附件", "uploads"):
+    Path(os.environ["POINT_QUOTE_USER_DATA_DIR"], relative).mkdir(parents=True, exist_ok=True)
 
 import fitz
 from fastapi.testclient import TestClient
@@ -515,7 +517,7 @@ def test_geometry_drawings_batch_and_feedback():
     drawing=request("POST",f"/api/projects/{project['id']}/drawings",files={"file":("一层.png",image.getvalue(),"image/png")})
     assert drawing["name"]=="一层"
     renamed=request("PATCH",f"/api/projects/{project['id']}/drawings/{drawing['id']}",json={"name":"首层平面"})
-    assert renamed["drawings"][0]["name"]=="首层平面"
+    assert next(item for item in renamed["drawings"] if item["id"]==drawing["id"])["name"]=="首层平面"
     curtain=request("POST",f"/api/projects/{project['id']}/points?drawing_id={drawing['id']}",json={"type_id":"curtain","x":.1,"y":.2,"x2":.6,"y2":.2})
     area=request("POST",f"/api/projects/{project['id']}/points?drawing_id={drawing['id']}",json={"type_id":"light","x":.2,"y":.3,"x2":.7,"y2":.8})
     assert curtain["shape"]=="line" and curtain["x2"]==.6
@@ -523,7 +525,7 @@ def test_geometry_drawings_batch_and_feedback():
     area=request("PATCH",f"/api/points/{area['id']}",json={"x":.15,"y":.25,"x2":.75,"y2":.85})
     assert (area["x"],area["y"],area["x2"],area["y2"])==(.15,.25,.75,.85)
     rotated=request("POST",f"/api/projects/{project['id']}/drawings/{drawing['id']}/rotate",json={})
-    rotated_drawing=rotated["drawings"][0]; rotated_area=next(p for p in rotated["points"] if p["id"]==area["id"])
+    rotated_drawing=next(item for item in rotated["drawings"] if item["id"]==drawing["id"]); rotated_area=next(p for p in rotated["points"] if p["id"]==area["id"])
     assert (rotated_drawing["width"],rotated_drawing["height"],rotated_drawing["rotation"])==(600,800,90)
     assert tuple(round(rotated_area[k],4) for k in ("x","y","x2","y2"))==(.75,.15,.15,.75)
     exported=client.get(f"/api/projects/{project['id']}/drawings/{drawing['id']}/export.pdf?show_name=false&show_number=false")
@@ -749,7 +751,7 @@ def test_quotation_v2_systems_calculation_override_and_versions():
 def test_v33_quotation_order_replace_cross_page_reorder_and_construction_fees():
     from backend.quotation_v2 import SYSTEM_CATEGORIES
 
-    expected_order=["equipment-cabinet","central-control","touch-control","curtain","hvac","cable","intercom","network","surveillance","music","lighting-control"]
+    expected_order=["equipment-cabinet","central-control","touch-control","curtain","hvac","cable","ubnt-network-monitor","intercom","network","surveillance","music","lighting-control"]
     assert [category["id"] for category in SYSTEM_CATEGORIES]==expected_order
     project=request("POST","/api/projects",json={"name":"v33报价回归"})
     pid=project["id"]
@@ -777,7 +779,8 @@ def test_v33_quotation_order_replace_cross_page_reorder_and_construction_fees():
     reordered=request("POST",f"/api/projects/{pid}/quotation-v2/reorder",json={"system_category":"network","item_ids":list(reversed(ids))})
     network=next(system for system in reordered["systems"] if system["category_id"]=="network")
     assert [item["id"] for item in network["items"]]==list(reversed(ids))
-    assert [item["id"] for item in request("GET",f"/api/projects/{pid}/quotation-v2")["systems"][7]["items"]]==list(reversed(ids))
+    reopened_network=next(system for system in request("GET",f"/api/projects/{pid}/quotation-v2")["systems"] if system["category_id"]=="network")
+    assert [item["id"] for item in reopened_network["items"]]==list(reversed(ids))
     invalid=client.post(f"/api/projects/{pid}/quotation-v2/reorder",json={"system_category":"network","item_ids":[new_item["id"],ids[0]]})
     assert invalid.status_code==422
 
@@ -789,6 +792,47 @@ def test_v33_quotation_order_replace_cross_page_reorder_and_construction_fees():
     assert totals["grand_total_cents"]==totals["systems_total_cents"]+totals["tax_cents"]+2000
     reopened=request("GET",f"/api/projects/{pid}/quotation-v2")
     assert reopened["construction_fees"][0]["amount_cents"]==2000
+
+
+def test_quotation_v2_excel_export_contains_editable_quote_sheets_and_formulas():
+    project=request("POST","/api/projects",json={"name":"Excel报价导出测试","customer":"测试客户"})
+    pid=project["id"]
+    quote=request("POST",f"/api/projects/{pid}/quotation-v2/items",json={"system_category":"central-control","product_name":"测试中控主机","product_code":"CTRL-01","brand":"测试品牌","origin":"中国","quantity":2,"unit_price":"125.50","unit":"台","params":"双网口"})
+    item=next(system for system in quote["systems"] if system["category_id"]=="central-control")["items"][0]
+    image=io.BytesIO(); Image.new("RGB",(240,120),"#3b82f6").save(image,"PNG")
+    uploaded=request("POST",f"/api/quotation-items/{item['id']}/image",files={"file":("test.png",image.getvalue(),"image/png")})
+    for index in range(7):
+        request("POST",f"/api/projects/{pid}/quotation-v2/items",json={"system_category":"central-control","product_name":f"同系统产品{index+2}","quantity":1,"unit_price":"1.00"})
+    request("PATCH",f"/api/projects/{pid}/quotation-v2/construction-fees",json={"fees":{"strong_power":"20.00","weak_power":"0","equipment_installation":"0","line_material":"0","system_training":"0"}})
+    request("PATCH",f"/api/projects/{pid}/quotation-v2",json={"tax_rate":"6"})
+
+    exported=client.get(f"/api/projects/{pid}/quotation-v2/export.xlsx")
+    assert exported.status_code==200
+    assert exported.headers["content-type"]=="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    workbook=load_workbook(io.BytesIO(exported.content),data_only=False)
+    assert workbook.sheetnames==["系统目录","01 中控系统","施工调试费","项目汇总"]
+    details=workbook["01 中控系统"]
+    assert details["A5"].value=="测试中控主机"
+    assert details["G5"].value==2 and details["H5"].value==125.5
+    assert details["J5"].value=="=G5*H5"
+    assert details["J13"].value.startswith("=SUM('01 中控系统'!J5,")
+    assert len(details._images)==1
+    image_anchor=details._images[0].anchor
+    assert image_anchor._from.col==1 and image_anchor._from.row==4
+    assert 0<image_anchor._from.colOff<100000 and image_anchor._from.rowOff>0
+    assert workbook["施工调试费"]["J6"].value=="=SUM(J5:J5)"
+    summary=workbook["项目汇总"]
+    assert summary["D5"].value=="='01 中控系统'!J14"
+    assert summary["D6"].value=="='施工调试费'!J6"
+    assert summary["D7"].value.startswith("=(SUM(D5:D6))")
+    assert summary["D8"].value.startswith("=SUM(D5:D6)")
+    assert summary["C2"].value.startswith("报价日期：")
+    assert summary.page_setup.fitToHeight==1
+    assert workbook["系统目录"]["I18"].value=="='项目汇总'!D8"
+    assert details.page_setup.orientation=="landscape" and details.page_setup.fitToWidth==1 and details.page_setup.fitToHeight==0
+    # Each directory row has a continuous top and bottom rule across the table.
+    assert all(workbook["系统目录"].cell(6, col).border.top.style=="thin" for col in range(1, 11))
+    assert all(workbook["系统目录"].cell(6, col).border.bottom.style=="thin" for col in range(1, 11))
 
 
 def test_z_v33_existing_32_quote_migrates_without_loss_when_fee_table_is_absent():
@@ -1002,7 +1046,7 @@ def test_rq013_legend_position_persists_to_vault_and_exports():
     curtain=request("POST",f"/api/projects/{project['id']}/points?drawing_id={drawing['id']}",json={"type_id":"curtain","x":.2,"y":.75,"x2":.65,"y2":.75})
 
     updated=request("PATCH",f"/api/projects/{project['id']}/drawings/{drawing['id']}",json={"legend_x":.58,"legend_y":.12})
-    saved=updated["drawings"][0]
+    saved=next(item for item in updated["drawings"] if item["id"]==drawing["id"])
     assert abs(saved["legend_x"]-.58)<1e-9 and abs(saved["legend_y"]-.12)<1e-9
     request("POST", "/api/knowledge-sync/retry")
     note=knowledge_repository.project_path(project["id"])
@@ -1019,4 +1063,5 @@ def test_rq013_legend_position_persists_to_vault_and_exports():
     reopened=request("GET",f"/api/projects/{project['id']}")
     assert len([point for point in reopened["points"] if point["type_id"]=="sensor"])==2
     assert all(point["type_id"]!="curtain" for point in reopened["points"])
-    assert abs(reopened["drawings"][0]["legend_x"]-.58)<1e-9
+    reopened_drawing=next(item for item in reopened["drawings"] if item["id"]==drawing["id"])
+    assert abs(reopened_drawing["legend_x"]-.58)<1e-9

@@ -25,7 +25,7 @@ class LocalPathTests(unittest.TestCase):
             second = workspace / "E-drive" / "moved package"
             second.parent.mkdir()
             first.rename(second)
-            moved = get_paths(second / "backend" / "path_resolver.py", platform_name="nt")
+            moved = get_paths(second / "backend" / "path_resolver.py", {}, platform_name="nt")
             self.assertEqual(moved.app_root, second)
             self.assertEqual(moved.data_root, second / "data")
             self.assertEqual(moved.resolve_project_path("测试.md"), second / "data" / "06_客户档案" / "智能图纸与报价" / "测试.md")

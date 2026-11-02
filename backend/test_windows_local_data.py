@@ -17,6 +17,7 @@ LEGACY_ID = "f" * 32
 
 def _run_package(package: Path, phase: str, old_db: Path) -> None:
     env = os.environ.copy()
+    env.pop("POINT_QUOTE_USER_DATA_DIR", None)
     env.update({
         "PYTHONPATH": str(package),
         "POINT_QUOTE_LOCAL_DATA_MODE": "1",
@@ -142,9 +143,11 @@ def test_windows_local_data_rebuild_and_offline_business_flow() -> None:
         shutil.copytree(APP_SOURCE / "assets", package / "assets")
         shutil.copytree(APP_SOURCE / "frontend" / "dist", package / "frontend" / "dist")
         shutil.copy2(APP_SOURCE / "VERSION", package / "VERSION")
+        child_env = {**os.environ, "PYTHONPATH": str(package), "POINT_QUOTE_LOCAL_DATA_MODE": "1"}
+        child_env.pop("POINT_QUOTE_USER_DATA_DIR", None)
         incomplete = subprocess.run(
             [sys.executable, "-c", "import backend.app"], cwd=package,
-            env={**os.environ, "PYTHONPATH": str(package), "POINT_QUOTE_LOCAL_DATA_MODE": "1"},
+            env=child_env,
             capture_output=True, text=True, timeout=30,
         )
         assert incomplete.returncode != 0 and "本地 data/ 知识库不完整" in incomplete.stderr

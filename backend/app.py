@@ -25,7 +25,11 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as XImage
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.units import pixels_to_EMU
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 from pydantic import BaseModel, Field
 from backend.path_resolver import get_paths
 
@@ -3020,6 +3024,387 @@ def export_drawing(pid: str,did: str,format: str,show_name: bool=True,show_numbe
     if format=="png": image.save(path)
     else: image.save(path,"PDF",resolution=200)
     return FileResponse(path,filename=path.name,headers={"Cache-Control":"no-store, max-age=0"})
+
+
+def quote_excel_sheet_setup(ws, title: str, end_row: int, widths=None):
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.sheet_properties.pageSetUpPr.autoPageBreaks = False
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A3
+    ws.page_setup.fitToWidth = 1
+    # Keep one worksheet per system. Long systems continue onto following
+    # printed pages instead of being split into separate worksheets or shrunk.
+    ws.page_setup.fitToHeight = 0
+    ws.page_margins.left = 0.18
+    ws.page_margins.right = 0.18
+    ws.page_margins.top = 0.2
+    ws.page_margins.bottom = 0.2
+    ws.print_area = f"A1:J{max(1, end_row)}"
+    ws.freeze_panes = "A5"
+    for index, width in enumerate(widths or [22, 10, 13, 27, 14, 10, 8, 12, 8, 13], 1):
+        ws.column_dimensions[get_column_letter(index)].width = width
+
+
+def quote_excel_cell(ws, row: int, column: int, value, *, font=None, fill=None, align="center", border=True, number_format=None, formula=False):
+    cell = ws.cell(row=row, column=column)
+    if isinstance(value, str):
+        cell.value = value
+        cell.data_type = "f" if formula else "s"  # Keep user text such as '=...' from becoming a spreadsheet formula.
+    else:
+        cell.value = value
+    cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+    if font:
+        cell.font = font
+    if fill:
+        cell.fill = fill
+    if border:
+        cell.border = Border(
+            left=Side(style="thin", color="777777"),
+            right=Side(style="thin", color="777777"),
+            top=Side(style="thin", color="777777"),
+            bottom=Side(style="thin", color="777777"),
+        )
+    if number_format:
+        cell.number_format = number_format
+    return cell
+
+
+def quote_excel_safe_sheet_title(value: str, existing: set[str]) -> str:
+    base = re.sub(r"[:\\/?*\[\]]", " ", str(value or "报价")).strip() or "报价"
+    base = base[:31]
+    title = base
+    suffix = 2
+    while title in existing:
+        tail = f" ({suffix})"
+        title = base[:31-len(tail)] + tail
+        suffix += 1
+    existing.add(title)
+    return title
+
+
+def quote_excel_pages(items: list[dict]) -> list[list[dict]]:
+    return [items] if items else []
+
+
+def quote_excel_add_product_image(ws, item: dict, cell_ref: str):
+    path = product_image_file(item.get("image_path"))
+    if not path:
+        return
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGBA")
+            image.thumbnail((68, 52))
+            background = Image.new("RGBA", image.size, "white")
+            background.alpha_composite(image)
+            stream = io.BytesIO()
+            background.convert("RGB").save(stream, "PNG")
+        stream.seek(0)
+        picture = XImage(stream)
+        picture.width = min(68, picture.width)
+        picture.height = min(52, picture.height)
+        cell = ws[cell_ref]
+        col_width = ws.column_dimensions[cell.column_letter].width or 11
+        row_height = ws.row_dimensions[cell.row].height or 49
+        # Leave a one-pixel inset for the cell gridlines and Excel's inner
+        # padding; this keeps the visible image centered in the usable cell.
+        cell_width_px = max(1, int(col_width * 7 + 5) - 2)
+        cell_height_px = max(1, int(row_height * 96 / 72) - 2)
+        marker = AnchorMarker(
+            col=cell.column - 1,
+            colOff=pixels_to_EMU(max(0, (cell_width_px - picture.width) // 2)),
+            row=cell.row - 1,
+            rowOff=pixels_to_EMU(max(0, (cell_height_px - picture.height) // 2)),
+        )
+        picture.anchor = OneCellAnchor(
+            _from=marker,
+            ext=XDRPositiveSize2D(cx=pixels_to_EMU(picture.width), cy=pixels_to_EMU(picture.height)),
+        )
+        ws.add_image(picture)
+    except (OSError, ValueError):
+        return
+
+
+def build_quotation_v2_workbook(data: dict) -> Workbook:
+    """Build editable, print-ready sheets that follow the quotation preview page structure."""
+    wb = Workbook()
+    directory = wb.active
+    directory.title = "系统目录"
+    existing_titles = {directory.title}
+    black = PatternFill("solid", fgColor="080808")
+    pale = PatternFill("solid", fgColor="F2F3F5")
+    white_bold = Font(name="Microsoft YaHei", color="FFFFFF", bold=True)
+    normal = Font(name="Microsoft YaHei", color="171717", size=10)
+    muted = Font(name="Microsoft YaHei", color="777777", size=9)
+    title_font = Font(name="Microsoft YaHei", color="FFFFFF", bold=True, size=16)
+    money_format = '¥#,##0.00;[Red]-¥#,##0.00'
+    item_widths = [24, 11, 14, 28, 15, 11, 8, 13, 8, 14]
+
+    # The preview uses visible systems only, with optional empty systems and uncategorized last.
+    systems = [
+        system for system in data["systems"]
+        if system["category_id"] != "uncategorized"
+        and (data["settings"]["show_empty_categories"] or any(item["visible"] for item in system["items"]))
+    ]
+    for system in systems:
+        system["_excel_items"] = [item for item in system["items"] if item["visible"]]
+    uncategorized = next((s for s in data["systems"] if s["category_id"] == "uncategorized"), None)
+    if uncategorized and any(item["visible"] for item in uncategorized["items"]):
+        uncategorized["_excel_items"] = [item for item in uncategorized["items"] if item["visible"]]
+        systems.append(uncategorized)
+    for index, system in enumerate(systems, 1):
+        system["_excel_order"] = index
+
+    total = data["totals"]
+    directory.merge_cells("A1:J1")
+    quote_excel_cell(directory, 1, 1, "TAIYUAN INTELLIGENT CONTROL", font=muted, border=False, align="left")
+    directory.merge_cells("A2:J2")
+    quote_excel_cell(directory, 2, 1, "智能家居系统报价", font=Font(name="Microsoft YaHei", size=22, bold=True), border=False)
+    directory.merge_cells("A3:J3")
+    quote_excel_cell(directory, 3, 1, data["settings"]["project_name"], font=Font(name="Microsoft YaHei", size=13, color="676B73"), border=False)
+    directory.merge_cells("A5:J5")
+    quote_excel_cell(directory, 5, 1, "系统目录  ·  System Directory", font=title_font, fill=black, border=False)
+    for row in range(6, 6 + len(systems)):
+        directory.row_dimensions[row].height = 34
+    system_total_refs = {}
+    directory_system_rows = {}
+    for index, system in enumerate(systems, 1):
+        row = 5 + index
+        quote_excel_cell(directory, row, 1, f"{index:02d}", font=muted)
+        directory.merge_cells(start_row=row, start_column=2, end_row=row, end_column=5)
+        quote_excel_cell(directory, row, 2, system["name_zh"], font=Font(name="Microsoft YaHei", bold=True, size=11), align="left")
+        directory.merge_cells(start_row=row, start_column=6, end_row=row, end_column=8)
+        quote_excel_cell(directory, row, 6, system["name_en"], font=muted, align="left")
+        directory.merge_cells(start_row=row, start_column=9, end_row=row, end_column=10)
+        amount = int(system.get("total_cents") or 0) / 100
+        quote_excel_cell(directory, row, 9, amount, number_format=money_format, font=normal)
+        system_total_refs[system["category_id"]] = (directory.title, f"I{row}")
+        directory_system_rows[system["category_id"]] = row
+    if total["construction_fee_total_cents"] > 0:
+        row = 6 + len(systems)
+        quote_excel_cell(directory, row, 1, f"{len(systems)+1:02d}", font=muted)
+        directory.merge_cells(start_row=row, start_column=2, end_row=row, end_column=5)
+        quote_excel_cell(directory, row, 2, "施工调试费", font=Font(name="Microsoft YaHei", bold=True, size=11), align="left")
+        directory.merge_cells(start_row=row, start_column=6, end_row=row, end_column=8)
+        quote_excel_cell(directory, row, 6, "Construction & Commissioning", font=muted, align="left")
+        directory.merge_cells(start_row=row, start_column=9, end_row=row, end_column=10)
+        quote_excel_cell(directory, row, 9, total["construction_fee_total_cents"] / 100, number_format=money_format, font=normal)
+    directory_total_row = max(18, 8 + len(systems))
+    directory.merge_cells(start_row=directory_total_row, start_column=1, end_row=directory_total_row, end_column=8)
+    quote_excel_cell(directory, directory_total_row, 1, "项目预算总计", font=Font(name="Microsoft YaHei", bold=True, size=14), fill=pale, align="left")
+    directory.merge_cells(start_row=directory_total_row, start_column=9, end_row=directory_total_row, end_column=10)
+    quote_excel_cell(directory, directory_total_row, 9, 0, font=Font(name="Microsoft YaHei", bold=True, size=15), fill=pale, number_format=money_format)
+    directory.row_dimensions[directory_total_row].height = 38
+    # Merged cells keep Excel from drawing full row rules consistently across
+    # viewers. Apply the perimeter and horizontal rules explicitly to every
+    # cell in each directory row, including merged placeholders.
+    directory_rule = Side(style="thin", color="777777")
+    directory_groups = ((1, 1), (2, 5), (6, 8), (9, 10))
+    for row in list(directory_system_rows.values()) + ([6 + len(systems)] if total["construction_fee_total_cents"] > 0 else []):
+        for column in range(1, 11):
+            left_edge = any(column == start for start, _ in directory_groups)
+            right_edge = any(column == end for _, end in directory_groups)
+            directory.cell(row, column).border = Border(
+                left=directory_rule if left_edge else Side(style=None),
+                right=directory_rule if right_edge else Side(style=None),
+                top=directory_rule,
+                bottom=directory_rule,
+            )
+    for column in range(1, 11):
+        directory.cell(directory_total_row, column).border = Border(
+            left=directory_rule if column in (1, 9) else Side(style=None),
+            right=directory_rule if column in (8, 10) else Side(style=None),
+            top=directory_rule,
+            bottom=directory_rule,
+        )
+    quote_excel_sheet_setup(directory, "系统目录", directory_total_row)
+
+    category_total_refs = {}
+    system_pages = {}
+    for system in systems:
+        pages = quote_excel_pages(system["_excel_items"])
+        if not pages and data["settings"]["show_empty_categories"]:
+            pages = [[]]
+        system_pages[system["category_id"]] = []
+        for part_index, items in enumerate(pages):
+            suffix = f" {part_index+1}" if len(pages) > 1 else ""
+            sheet_title = quote_excel_safe_sheet_title(f"{system['_excel_order']:02d} {system['name_zh']}{suffix}", existing_titles)
+            ws = wb.create_sheet(sheet_title)
+            ws.merge_cells("A1:A2")
+            quote_excel_cell(ws, 1, 1, f"{system['_excel_order']:02d}", font=Font(name="Microsoft YaHei", size=21, color="FFFFFF", bold=True), fill=black, border=False)
+            ws.merge_cells("B1:J1")
+            quote_excel_cell(ws, 1, 2, f"{system['name_zh']}报价清单", font=title_font, fill=black, border=False, align="left")
+            ws.merge_cells("B2:J2")
+            quote_excel_cell(ws, 2, 2, system["name_en"], font=Font(name="Microsoft YaHei", size=9, color="CCCCCC", italic=True), fill=black, border=False, align="left")
+            ws.row_dimensions[1].height = 25
+            ws.row_dimensions[2].height = 18
+            headers = ["产品名称", "图片", "产品编号", "产品参数", "品牌", "产地", "数量", "单价", "单位", "合计"]
+            for column, header in enumerate(headers, 1):
+                quote_excel_cell(ws, 4, column, header, font=white_bold, fill=black)
+            ws.row_dimensions[4].height = 29
+            row_refs = []
+            for item_index, item in enumerate(items, 5):
+                row_refs.append(f"J{item_index}")
+                ws.row_dimensions[item_index].height = 49
+                quote_excel_cell(ws, item_index, 1, f"{item['product_name']}" + (f"\n{item['remark']}" if item.get("remark") else ""), font=normal, align="left")
+                quote_excel_cell(ws, item_index, 2, "", font=normal)
+                # Set the image-column width before calculating its anchor; the
+                # final sheet setup repeats this width and applies all others.
+                ws.column_dimensions["B"].width = item_widths[1]
+                quote_excel_add_product_image(ws, item, f"B{item_index}")
+                quote_excel_cell(ws, item_index, 3, item.get("product_code") or "-", font=normal)
+                quote_excel_cell(ws, item_index, 4, item.get("params") or "-", font=Font(name="Microsoft YaHei", size=9), align="left")
+                quote_excel_cell(ws, item_index, 5, item.get("brand") or "-", font=normal)
+                quote_excel_cell(ws, item_index, 6, item.get("origin") or "-", font=normal)
+                quote_excel_cell(ws, item_index, 7, int(item["quantity"]), font=normal, number_format="0")
+                quote_excel_cell(ws, item_index, 8, int(item["unit_price_cents"]) / 100, font=normal, number_format=money_format)
+                quote_excel_cell(ws, item_index, 9, item.get("unit") or "台", font=normal)
+                quote_excel_cell(ws, item_index, 10, f"=G{item_index}*H{item_index}", font=normal, number_format=money_format, formula=True)
+            next_row = 5 + len(items)
+            system_pages[system["category_id"]].append((sheet_title, row_refs))
+            if part_index == len(pages) - 1:
+                ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=9)
+                quote_excel_cell(ws, next_row, 1, "产品小计", font=Font(name="Microsoft YaHei", bold=True), fill=pale, align="right")
+                all_refs = [f"'{title}'!{ref}" for title, refs in system_pages[system["category_id"]] for ref in refs]
+                subtotal_formula = f"=SUM({','.join(all_refs)})" if all_refs else "=0"
+                quote_excel_cell(ws, next_row, 10, subtotal_formula, font=Font(name="Microsoft YaHei", bold=True), fill=pale, number_format=money_format, formula=True)
+                next_row += 1
+                system_total_formula = f"=J{next_row-1}"
+                if system["service_type"] != "none":
+                    service_amount = int(system["service_calculated_cents"]) / 100
+                    ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=9)
+                    quote_excel_cell(ws, next_row, 1, system["service_name"], font=normal, align="right")
+                    quote_excel_cell(ws, next_row, 10, service_amount, font=normal, number_format=money_format)
+                    system_total_formula = f"=J{next_row-1}+J{next_row}"
+                    next_row += 1
+                ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=9)
+                quote_excel_cell(ws, next_row, 1, "系统总计", font=Font(name="Microsoft YaHei", color="FFFFFF", bold=True, size=11), fill=black, align="right")
+                quote_excel_cell(ws, next_row, 10, system_total_formula, font=Font(name="Microsoft YaHei", color="FFFFFF", bold=True, size=11), fill=black, number_format=money_format, formula=True)
+                category_total_refs[system["category_id"]] = (sheet_title, f"J{next_row}")
+                next_row += 1
+            quote_excel_sheet_setup(ws, sheet_title, max(15, next_row + 1), item_widths)
+
+    fee_sheet_title = None
+    if total["construction_fee_total_cents"] > 0:
+        fee_sheet_title = quote_excel_safe_sheet_title("施工调试费", existing_titles)
+        ws = wb.create_sheet(fee_sheet_title)
+        ws.merge_cells("A1:A2")
+        quote_excel_cell(ws, 1, 1, "+", font=Font(name="Microsoft YaHei", size=24, color="FFFFFF"), fill=black, border=False)
+        ws.merge_cells("B1:J1")
+        quote_excel_cell(ws, 1, 2, "施工调试费", font=title_font, fill=black, border=False, align="left")
+        ws.merge_cells("B2:J2")
+        quote_excel_cell(ws, 2, 2, "Construction & Commissioning · 不参与税额计算", font=Font(name="Microsoft YaHei", size=9, color="CCCCCC", italic=True), fill=black, border=False, align="left")
+        ws.merge_cells("A4:I4")
+        quote_excel_cell(ws, 4, 1, "费用项目", font=white_bold, fill=black)
+        quote_excel_cell(ws, 4, 10, "金额", font=white_bold, fill=black)
+        fee_row = 5
+        for fee in data["construction_fees"]:
+            if int(fee["amount_cents"]) <= 0:
+                continue
+            ws.merge_cells(start_row=fee_row, start_column=1, end_row=fee_row, end_column=9)
+            quote_excel_cell(ws, fee_row, 1, fee["name"], font=normal, align="left")
+            quote_excel_cell(ws, fee_row, 10, int(fee["amount_cents"]) / 100, font=normal, number_format=money_format)
+            ws.row_dimensions[fee_row].height = 30
+            fee_row += 1
+        total_row = fee_row
+        ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=9)
+        quote_excel_cell(ws, total_row, 1, "施工调试费合计", font=Font(name="Microsoft YaHei", bold=True), fill=pale, align="right")
+        quote_excel_cell(ws, total_row, 10, f"=SUM(J5:J{total_row-1})", font=Font(name="Microsoft YaHei", bold=True), fill=pale, number_format=money_format, formula=True)
+        quote_excel_sheet_setup(ws, fee_sheet_title, max(15, total_row + 2), item_widths)
+
+    summary_title = quote_excel_safe_sheet_title("项目汇总", existing_titles)
+    summary = wb.create_sheet(summary_title)
+    summary.merge_cells("A1:D1")
+    quote_excel_cell(summary, 1, 1, "项目报价汇总  ·  Project Quotation Summary", font=title_font, fill=black, border=False, align="left")
+    summary.row_dimensions[1].height = 38
+    summary.merge_cells("A2:B2")
+    quote_excel_cell(summary, 2, 1, f"项目：{data['settings']['project_name']}", font=normal, border=False, align="left")
+    summary.merge_cells("C2:D2")
+    quote_excel_cell(summary, 2, 3, f"报价日期：{data['settings']['quote_date']}", font=muted, border=False, align="right")
+    summary.row_dimensions[2].height = 28
+    for column, label in enumerate(("序号", "系统类别", "System", "项目合计"), 1):
+        quote_excel_cell(summary, 4, column, label, font=white_bold, fill=black)
+    summary.row_dimensions[4].height = 30
+    summary_system_rows = {}
+    summary_row = 5
+    for index, system in enumerate(systems, 1):
+        quote_excel_cell(summary, summary_row, 1, f"{index:02d}", font=muted)
+        quote_excel_cell(summary, summary_row, 2, system["name_zh"], font=normal, align="left")
+        quote_excel_cell(summary, summary_row, 3, system["name_en"], font=muted, align="left")
+        ref_title, ref_cell = category_total_refs.get(system["category_id"], (None, None))
+        quote_excel_cell(summary, summary_row, 4, f"='{ref_title}'!{ref_cell}" if ref_title else 0, font=Font(name="Microsoft YaHei", bold=True, size=10), number_format=money_format, align="right", formula=bool(ref_title))
+        if index % 2 == 0:
+            for column in range(1, 5):
+                summary.cell(summary_row, column).fill = pale
+        summary_system_rows[system["category_id"]] = summary_row
+        summary.row_dimensions[summary_row].height = 28
+        summary_row += 1
+    base_end_row = summary_row - 1
+    if fee_sheet_title:
+        quote_excel_cell(summary, summary_row, 1, f"{len(systems)+1:02d}", font=muted)
+        quote_excel_cell(summary, summary_row, 2, "施工调试费", font=normal, align="left")
+        quote_excel_cell(summary, summary_row, 3, "Construction & Commissioning（不计税）", font=muted, align="left")
+        quote_excel_cell(summary, summary_row, 4, f"='{fee_sheet_title}'!J{total_row}", font=Font(name="Microsoft YaHei", bold=True, size=10), number_format=money_format, align="right", formula=True)
+        for column in range(1, 5):
+            summary.cell(summary_row, column).fill = PatternFill("solid", fgColor="FFF7E6")
+        summary.row_dimensions[summary_row].height = 28
+        base_end_row = summary_row
+        summary_row += 1
+    base_start_row = 5
+    discount_row = None
+    if total["discount_cents"] > 0:
+        summary.merge_cells(start_row=summary_row, start_column=1, end_row=summary_row, end_column=3)
+        quote_excel_cell(summary, summary_row, 1, "折扣", font=normal, fill=pale, align="right")
+        if data["settings"]["discount_type"] == "percentage":
+            value = f"=-SUM(D{base_start_row}:D{base_end_row})*{int(data['settings']['discount_value'])}/10000"
+        else:
+            value = -int(total["discount_cents"]) / 100
+        quote_excel_cell(summary, summary_row, 4, value, font=normal, fill=pale, number_format=money_format, align="right", formula=data["settings"]["discount_type"] == "percentage")
+        discount_row = summary_row
+        summary_row += 1
+    if total["tax_cents"] > 0:
+        summary.merge_cells(start_row=summary_row, start_column=1, end_row=summary_row, end_column=3)
+        quote_excel_cell(summary, summary_row, 1, "税费", font=normal, fill=pale, align="right")
+        discount_ref = f"+D{discount_row}" if discount_row else ""
+        tax_formula = f"=(SUM(D{base_start_row}:D{base_end_row}){discount_ref})*{int(data['settings']['tax_rate_basis'])}/10000"
+        quote_excel_cell(summary, summary_row, 4, tax_formula, font=normal, fill=pale, number_format=money_format, align="right", formula=True)
+        summary_row += 1
+    total_row = summary_row
+    summary.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=3)
+    quote_excel_cell(summary, total_row, 1, "总计  TOTAL", font=Font(name="Microsoft YaHei", bold=True, size=13, color="FFFFFF"), fill=black, align="right")
+    quote_excel_cell(summary, total_row, 4, f"=SUM(D{base_start_row}:D{base_end_row})" + (f"+D{discount_row}" if discount_row else "") + (f"+D{total_row-1}" if total["tax_cents"] > 0 else ""), font=Font(name="Microsoft YaHei", bold=True, size=13, color="FFFFFF"), fill=black, number_format=money_format, align="right", formula=True)
+    summary.row_dimensions[total_row].height = 36
+    meta_row = total_row + 3
+    summary.merge_cells(start_row=meta_row, start_column=1, end_row=meta_row, end_column=4)
+    quote_excel_cell(summary, meta_row, 1, f"公司：{data['settings']['company_info']}", font=muted, border=False, align="left")
+    summary.row_dimensions[meta_row].height = 26
+    quote_excel_sheet_setup(summary, summary_title, meta_row, [14, 42, 94, 36])
+    summary.print_area = f"A1:D{meta_row}"
+    summary.page_setup.fitToHeight = 1
+    summary.print_options.horizontalCentered = True
+
+    for category_id, directory_row in directory_system_rows.items():
+        ref_title, ref_cell = category_total_refs[category_id]
+        directory_cell = directory.cell(directory_row, 9)
+        directory_cell.value = f"='{ref_title}'!{ref_cell}"
+        directory_cell.data_type = "f"
+    directory_formula = f"='{summary_title}'!D{total_row}"
+    directory.cell(directory_total_row, 9).value = directory_formula
+    directory.cell(directory_total_row, 9).data_type = "f"
+    wb.calculation.fullCalcOnLoad = True
+    wb.calculation.forceFullCalc = True
+    wb.calculation.calcMode = "auto"
+    return wb
+
+
+@app.get("/api/projects/{pid}/quotation-v2/export.xlsx")
+def export_quotation_v2_excel(pid: str):
+    with connect() as db:
+        data = quotation_v2_data(db, pid)
+    wb = build_quotation_v2_workbook(data)
+    path = EXPORTS / f'{safe_name(data["settings"]["project_name"])}_报价单_V{data["version"]}_{datetime.now():%Y%m%d_%H%M%S}.xlsx'
+    wb.save(path)
+    return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Cache-Control": "no-store, max-age=0"})
 
 
 @app.get("/api/projects/{pid}/quote/export.xlsx")
